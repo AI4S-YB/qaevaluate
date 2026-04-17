@@ -289,6 +289,19 @@ def submit_task(
     task = get_task(task_id, current_user["id"])
     created_at = now_iso()
     with db_cursor() as cursor:
+        existing_record = cursor.execute(
+            """
+            SELECT id
+            FROM evaluation_records
+            WHERE task_id = ?
+            """,
+            (task_id,),
+        ).fetchone()
+        if existing_record:
+            raise HTTPException(status_code=409, detail="task already submitted")
+        if task["status"] == "submitted":
+            raise HTTPException(status_code=409, detail="task already submitted")
+
         cursor.execute(
             """
             INSERT INTO evaluation_records (
