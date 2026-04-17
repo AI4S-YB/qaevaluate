@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 42 45% 97%;
+    --foreground: 150 18% 17%;
+    --card: 0 0% 100%;
+    --card-foreground: 150 18% 17%;
+    --border: 35 23% 86%;
+    --input: 35 23% 86%;
+    --primary: 160 33% 34%;
+    --primary-foreground: 0 0% 100%;
+    --muted: 42 26% 94%;
+    --muted-foreground: 152 10% 41%;
+    --accent: 38 82% 91%;
+    --accent-foreground: 26 46% 30%;
+    --ring: 160 33% 34%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}
+
+@layer components {
+  .field {
+    @apply h-11 w-full rounded-2xl border border-border bg-white px-4 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15;
+  }
+
+  .field-textarea {
+    @apply min-h-28 w-full rounded-3xl border border-border bg-white px-4 py-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15;
+  }
+
+  .section-grid {
+    @apply grid gap-4 md:grid-cols-2 xl:grid-cols-4;
+  }
+}

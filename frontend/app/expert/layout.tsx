@@ -1,0 +1,26 @@
+import { AuthGuard } from "@/components/auth-guard";
+import { AppShell, type NavItem } from "@/components/app-shell";
+
+const navItems: NavItem[] = [
+  { href: "/expert", label: "工作台", hint: "任务概览与快捷入口" },
+  { href: "/expert/tasks", label: "任务列表", hint: "查看待评与争议复核任务" },
+  { href: "/expert/history", label: "我的历史", hint: "查看已提交的评测记录" },
+  { href: "/expert/profile", label: "我的资料", hint: "更新擅长应用和简介" }
+];
+
+export default function ExpertLayout({
+  children
+}: Readonly<{ children: React.ReactNode }>) {
+  return (
+    <AuthGuard role="expert">
+      <AppShell
+        title="专家评测端"
+        subtitle="围绕单个任务完成结构化打分、LLM 辅助分析和候选标准答案确认。"
+        navItems={navItems}
+        roleLabel="Expert Workspace"
+      >
+        {children}
+      </AppShell>
+    </AuthGuard>
+  );
+}
