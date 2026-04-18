@@ -55,6 +55,9 @@ export type ExpertTaskListItem = {
   assigned_at: string;
   expires_at: string | null;
   application_name: string;
+  business_tags_json: string | null;
+  technical_type_code: string | null;
+  technical_type_name: string | null;
   question_summary: string;
 };
 
@@ -103,6 +106,9 @@ export type TaskDetail = {
     question_text: string;
     context_text: string | null;
     tags_json: string | null;
+    business_tags_json: string | null;
+    technical_type_code: string | null;
+    technical_type_name: string | null;
     source: string | null;
   };
   current_answer: {
@@ -127,6 +133,7 @@ export type TaskDetail = {
     created_at: string;
   }>;
   draft: unknown;
+  submitted_record: TaskDraft | null;
 };
 
 export type TaskDraft = {
@@ -136,6 +143,9 @@ export type TaskDraft = {
     relevance_rating?: string | null;
     clarity_rating?: string | null;
     risk_flag?: string | null;
+    reasoning_completeness?: string | null;
+    reasoning_consistency?: string | null;
+    reasoning_support?: string | null;
     overall_decision?: string | null;
     quick_comment_codes?: string[];
     adopted_rewrite_answer_id?: number | null;
@@ -209,6 +219,9 @@ export type QaListItem = {
   external_id: string | null;
   status: string;
   application_name: string;
+  business_tags_json: string | null;
+  technical_type_code: string | null;
+  technical_type_name: string | null;
   review_count: number | null;
   final_decision: string | null;
   agreement_score: number | null;
@@ -225,6 +238,9 @@ export type QaDetail = {
     source: string | null;
     status: string;
     application_name: string;
+    business_tags_json?: string | null;
+    technical_type_code?: string | null;
+    technical_type_name?: string | null;
   };
   answers: Array<{
     id: number;
@@ -251,6 +267,9 @@ export type QaDetail = {
     relevance_rating: string;
     clarity_rating: string;
     risk_flag: string;
+    reasoning_completeness?: string | null;
+    reasoning_consistency?: string | null;
+    reasoning_support?: string | null;
     quick_comment_codes: string | null;
     created_at: string;
   }>;
@@ -383,4 +402,14 @@ export type ExportJob = {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+};
+
+export type TaxonomyItem = {
+  id: number;
+  code: string;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  sort_order: number;
+  created_at: string;
 };

@@ -33,6 +33,16 @@ function formatRecordList(value: string | null) {
   }
 }
 
+function formatTagList(value: string | null | undefined) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as string[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 export default function AdminQaDetailPage() {
   const params = useParams<{ qaId: string }>();
   const qaId = params.qaId;
@@ -109,6 +119,10 @@ export default function AdminQaDetailPage() {
     () => detail?.answers.find((answer) => answer.id === finalStandardAnswerId) ?? null,
     [detail, finalStandardAnswerId]
   );
+  const businessTags = useMemo(
+    () => formatTagList(detail?.qa_item.business_tags_json),
+    [detail?.qa_item.business_tags_json]
+  );
 
   if (loading) {
     return (
@@ -166,16 +180,25 @@ export default function AdminQaDetailPage() {
           </CardHeader>
           <CardContent className="space-y-4 text-sm leading-7 text-muted-foreground">
             <p>应用：{detail.qa_item.application_name}</p>
+            <p>技术类型：{detail.qa_item.technical_type_name || "未定义"}</p>
             <p>问题：{detail.qa_item.question_text}</p>
             <p>来源：{detail.qa_item.source || "未记录"}</p>
             <div className="flex flex-wrap gap-2">
               <Badge variant="muted">{detail.qa_item.status}</Badge>
+              {detail.qa_item.technical_type_name ? (
+                <Badge variant="warning">{detail.qa_item.technical_type_name}</Badge>
+              ) : null}
               <Badge variant={decisionVariant(detail.aggregate?.final_decision ?? "pending")}>
                 {decisionLabel(detail.aggregate?.final_decision ?? "pending")}
               </Badge>
               <Badge variant="muted">
                 评审人数 {detail.aggregate?.review_count ?? 0}
               </Badge>
+              {businessTags.map((tag) => (
+                <Badge key={tag} variant="muted">
+                  {tag}
+                </Badge>
+              ))}
             </div>
             <div className="grid gap-2 sm:grid-cols-2">
               <p>
@@ -253,6 +276,13 @@ export default function AdminQaDetailPage() {
                     {record.relevance_rating}，清晰度 {record.clarity_rating}
                   </p>
                   <p>风险：{record.risk_flag}</p>
+                  {detail.qa_item.technical_type_code === "cot_qa" ? (
+                    <p>
+                      推理链完整性 {record.reasoning_completeness || "未填"}，推理链自洽性{" "}
+                      {record.reasoning_consistency || "未填"}，结论与推理一致性{" "}
+                      {record.reasoning_support || "未填"}
+                    </p>
+                  ) : null}
                   {tags.length > 0 ? (
                     <div className="mt-3 flex flex-wrap gap-2">
                       {tags.map((tag) => (

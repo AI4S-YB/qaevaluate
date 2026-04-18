@@ -59,6 +59,6 @@ def require_admin(current_user: CurrentUser = Depends(get_current_user)) -> Curr
 
 
 def require_expert(current_user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
-    if current_user["role"] != "expert":
+    if current_user["role"] not in {"expert", "admin"}:
         raise HTTPException(status_code=403, detail="expert only")
     return current_user

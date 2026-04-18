@@ -32,6 +32,17 @@ export function AuthStatus() {
 
   return (
     <div className="flex items-center gap-3">
+      {session.user.role === "admin" ? (
+        pathname.startsWith("/expert") ? (
+          <Button size="sm" variant="secondary" onClick={() => router.push("/admin")}>
+            返回管理端
+          </Button>
+        ) : (
+          <Button size="sm" variant="secondary" onClick={() => router.push("/expert")}>
+            切换到专家端
+          </Button>
+        )
+      ) : null}
       <div className="text-right">
         <p className="text-sm font-medium">{session.user.username}</p>
         <p className="text-xs text-muted-foreground">

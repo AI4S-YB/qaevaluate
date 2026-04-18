@@ -66,6 +66,36 @@ const decisionOptions = [
   { label: "不通过", value: "fail" }
 ] as const;
 
+const reasoningGroups = [
+  {
+    title: "推理链完整性",
+    field: "reasoning_completeness",
+    options: [
+      { label: "强", value: "strong" },
+      { label: "一般", value: "medium" },
+      { label: "弱", value: "weak" }
+    ]
+  },
+  {
+    title: "推理链自洽性",
+    field: "reasoning_consistency",
+    options: [
+      { label: "强", value: "strong" },
+      { label: "一般", value: "medium" },
+      { label: "弱", value: "weak" }
+    ]
+  },
+  {
+    title: "结论与推理一致性",
+    field: "reasoning_support",
+    options: [
+      { label: "强", value: "strong" },
+      { label: "一般", value: "medium" },
+      { label: "弱", value: "weak" }
+    ]
+  }
+] as const;
+
 const quickCommentOptions = ["事实错误", "遗漏关键点", "表达不清", "偏题", "存在风险", "答案较优"];
 
 type ScoreState = {
@@ -74,6 +104,9 @@ type ScoreState = {
   relevance_rating: string;
   clarity_rating: string;
   risk_flag: string;
+  reasoning_completeness: string;
+  reasoning_consistency: string;
+  reasoning_support: string;
   overall_decision: string;
   quick_comment_codes: string[];
 };
@@ -84,6 +117,9 @@ const initialScoreState: ScoreState = {
   relevance_rating: "",
   clarity_rating: "",
   risk_flag: "none",
+  reasoning_completeness: "",
+  reasoning_consistency: "",
+  reasoning_support: "",
   overall_decision: "",
   quick_comment_codes: []
 };
@@ -95,9 +131,19 @@ function normalizeDraftPayload(draft: TaskDraft["payload"]): ScoreState {
     relevance_rating: draft.relevance_rating ?? "",
     clarity_rating: draft.clarity_rating ?? "",
     risk_flag: draft.risk_flag ?? "none",
+    reasoning_completeness: draft.reasoning_completeness ?? "",
+    reasoning_consistency: draft.reasoning_consistency ?? "",
+    reasoning_support: draft.reasoning_support ?? "",
     overall_decision: draft.overall_decision ?? "",
     quick_comment_codes: draft.quick_comment_codes ?? []
   };
+}
+
+function resolveSavedPayload(detail: TaskDetail): TaskDraft | null {
+  if (detail.draft && typeof detail.draft === "object") {
+    return detail.draft as TaskDraft;
+  }
+  return detail.submitted_record;
 }
 
 function parseTags(tagsJson: string | null) {
@@ -171,15 +217,12 @@ export default function ExpertTaskDetailPage() {
         await apiFetch(`/api/expert/tasks/${taskId}/start`, { method: "POST" });
         const data = await apiFetch<TaskDetail>(`/api/expert/tasks/${taskId}`);
         setDetail(data);
+        const savedPayload = resolveSavedPayload(data);
         setSelectedCandidateId(
-          data.draft && typeof data.draft === "object" && data.draft !== null
-            ? ((data.draft as TaskDraft).payload.adopted_rewrite_answer_id ??
-                data.current_answer.id)
-            : data.current_answer.id
+          savedPayload?.payload.adopted_rewrite_answer_id ?? data.current_answer.id
         );
-        if (data.draft && typeof data.draft === "object") {
-          const draft = data.draft as TaskDraft;
-          setScores(normalizeDraftPayload(draft.payload));
+        if (savedPayload) {
+          setScores(normalizeDraftPayload(savedPayload.payload));
         }
         const activeSession = data.llm_sessions.find((session) => session.status === "active");
         const firstSession = data.llm_sessions[0];
@@ -340,6 +383,17 @@ export default function ExpertTaskDetailPage() {
       setError("请先完成评分、风险标记和总体结论");
       return;
     }
+    if (
+      detail?.qa_item.technical_type_code === "cot_qa" &&
+      [
+        scores.reasoning_completeness,
+        scores.reasoning_consistency,
+        scores.reasoning_support
+      ].some((value) => !value)
+    ) {
+      setError("当前是 CoT 题，请补充推理链专项评分");
+      return;
+    }
 
     setSubmitting(true);
     setError(null);
@@ -353,8 +407,17 @@ export default function ExpertTaskDetailPage() {
             scores.overall_decision === "rewrite" ? selectedCandidateId : null
         })
       });
-      await loadDetail();
-      setNotice("评测已提交，同时已触发聚合任务。");
+      const latest = await loadDetail();
+      if (latest) {
+        const savedPayload = resolveSavedPayload(latest);
+        if (savedPayload) {
+          setScores(normalizeDraftPayload(savedPayload.payload));
+          setSelectedCandidateId(
+            savedPayload.payload.adopted_rewrite_answer_id ?? latest.current_answer.id
+          );
+        }
+      }
+      setNotice(isSubmitted ? "评测已重新提交，已覆盖上一次结果并触发聚合任务。" : "评测已提交，同时已触发聚合任务。");
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交失败");
     } finally {
@@ -366,9 +429,15 @@ export default function ExpertTaskDetailPage() {
     () => (detail ? parseTags(detail.qa_item.tags_json) : []),
     [detail]
   );
+  const businessTags = useMemo(
+    () => (detail ? parseTags(detail.qa_item.business_tags_json) : []),
+    [detail]
+  );
   const sessions = detail?.llm_sessions ?? [];
   const candidates = detail?.candidate_answers ?? [];
   const isPolling = pollingSessionId !== null;
+  const isSubmitted = detail?.task.status === "submitted";
+  const isCotQa = detail?.qa_item.technical_type_code === "cot_qa";
 
   if (loading) {
     return (
@@ -401,11 +470,20 @@ export default function ExpertTaskDetailPage() {
         </div>
         <div className="flex flex-wrap gap-3">
           <Badge variant="muted">{detail.qa_item.application_name}</Badge>
+          {detail.qa_item.technical_type_name ? (
+            <Badge variant="warning">{detail.qa_item.technical_type_name}</Badge>
+          ) : null}
           <Badge variant={detail.task.status === "submitted" ? "success" : "default"}>
             {taskTypeLabel}
           </Badge>
+          {isSubmitted ? <Badge variant="success">已提交，可再次修改</Badge> : null}
           {tags.map((tag) => (
             <Badge key={tag} variant="warning">
+              {tag}
+            </Badge>
+          ))}
+          {businessTags.map((tag) => (
+            <Badge key={`business-${tag}`} variant="muted">
               {tag}
             </Badge>
           ))}
@@ -520,6 +598,36 @@ export default function ExpertTaskDetailPage() {
               </div>
             </div>
 
+            {isCotQa ? (
+              <div className="space-y-4 rounded-[24px] border border-dashed border-border bg-white p-4">
+                <p className="text-sm font-medium text-muted-foreground">CoT 专项评审</p>
+                {reasoningGroups.map((group) => (
+                  <div key={group.title} className="space-y-2">
+                    <p className="text-sm font-medium">{group.title}</p>
+                    <div className="flex flex-wrap gap-2">
+                      {group.options.map((option) => (
+                        <Button
+                          key={option.value}
+                          variant={
+                            scores[group.field] === option.value ? "default" : "secondary"
+                          }
+                          size="sm"
+                          onClick={() =>
+                            setScores((current) => ({
+                              ...current,
+                              [group.field]: option.value
+                            }))
+                          }
+                        >
+                          {option.label}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
             <div className="space-y-2">
               <p className="text-sm font-medium">快速原因标签</p>
               <div className="flex flex-wrap gap-2">
@@ -568,7 +676,11 @@ export default function ExpertTaskDetailPage() {
               onChange={(event) => setLlmPrompt(event.target.value)}
             />
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" disabled={llmBusy} onClick={() => void handleLlmAction("fact_check")}>
+              <Button
+                size="sm"
+                disabled={llmBusy}
+                onClick={() => void handleLlmAction("fact_check")}
+              >
                 事实检查
               </Button>
               <Button
@@ -692,7 +804,7 @@ export default function ExpertTaskDetailPage() {
                 {savingDraft ? "保存中…" : "暂存"}
               </Button>
               <Button disabled={submitting} onClick={() => void handleSubmit()}>
-                {submitting ? "提交中…" : "提交评测"}
+                {submitting ? "提交中…" : isSubmitted ? "重新提交并覆盖" : "提交评测"}
               </Button>
             </div>
           </CardContent>

@@ -18,6 +18,77 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    if not table_exists(conn, table_name):
+        return False
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(row["name"] == column_name for row in rows)
+
+
+def ensure_column(conn: sqlite3.Connection, table_name: str, ddl: str, column_name: str) -> None:
+    if table_exists(conn, table_name) and not column_exists(conn, table_name, column_name):
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {ddl}")
+
+
+def apply_legacy_migrations(conn: sqlite3.Connection) -> None:
+    # Keep startup compatible with older local SQLite files before running schema.sql.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS technical_types (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          code TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL UNIQUE,
+          description TEXT,
+          is_active INTEGER NOT NULL DEFAULT 1,
+          sort_order INTEGER NOT NULL DEFAULT 100,
+          created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS business_tags (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          code TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL UNIQUE,
+          description TEXT,
+          is_active INTEGER NOT NULL DEFAULT 1,
+          sort_order INTEGER NOT NULL DEFAULT 100,
+          created_at TEXT NOT NULL
+        )
+        """
+    )
+    ensure_column(conn, "qa_items", "technical_type_id INTEGER", "technical_type_id")
+    ensure_column(conn, "qa_items", "business_tags_json TEXT", "business_tags_json")
+    ensure_column(
+        conn,
+        "evaluation_records",
+        "reasoning_completeness TEXT CHECK(reasoning_completeness IN ('strong', 'medium', 'weak'))",
+        "reasoning_completeness",
+    )
+    ensure_column(
+        conn,
+        "evaluation_records",
+        "reasoning_consistency TEXT CHECK(reasoning_consistency IN ('strong', 'medium', 'weak'))",
+        "reasoning_consistency",
+    )
+    ensure_column(
+        conn,
+        "evaluation_records",
+        "reasoning_support TEXT CHECK(reasoning_support IN ('strong', 'medium', 'weak'))",
+        "reasoning_support",
+    )
+    conn.commit()
+
+
 @contextmanager
 def db_cursor() -> Iterator[sqlite3.Cursor]:
     conn = get_connection()
@@ -33,5 +104,5 @@ def init_db() -> None:
     ensure_parent_dir(DB_PATH)
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
     with get_connection() as conn:
+        apply_legacy_migrations(conn)
         conn.executescript(schema)
-

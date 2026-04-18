@@ -4,10 +4,20 @@ import type { Route } from "next";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
-import { apiFetch, type QaListItem } from "@/lib/api";
+import { apiFetch, type QaListItem, type TaxonomyItem } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+
+function parseBusinessTags(value: string | null) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as string[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 
 function decisionVariant(value: string | null) {
   if (value === "pass") return "success";
@@ -59,8 +69,12 @@ function resolveOperationalState(item: QaListItem) {
 
 export default function AdminQasPage() {
   const [qas, setQas] = useState<QaListItem[]>([]);
+  const [technicalTypes, setTechnicalTypes] = useState<TaxonomyItem[]>([]);
+  const [businessTags, setBusinessTags] = useState<TaxonomyItem[]>([]);
   const [filter, setFilter] = useState("");
   const [stateFilter, setStateFilter] = useState("all");
+  const [technicalTypeFilter, setTechnicalTypeFilter] = useState("all");
+  const [businessTagFilter, setBusinessTagFilter] = useState("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -77,8 +91,22 @@ export default function AdminQasPage() {
     }
   }
 
+  async function loadTaxonomy() {
+    try {
+      const [technicalTypeData, businessTagData] = await Promise.all([
+        apiFetch<TaxonomyItem[]>("/api/admin/technical-types"),
+        apiFetch<TaxonomyItem[]>("/api/admin/business-tags")
+      ]);
+      setTechnicalTypes(technicalTypeData.filter((item) => item.is_active));
+      setBusinessTags(businessTagData.filter((item) => item.is_active));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载分类配置失败");
+    }
+  }
+
   useEffect(() => {
     void loadQas();
+    void loadTaxonomy();
   }, []);
 
   const filtered = useMemo(() => {
@@ -88,15 +116,29 @@ export default function AdminQasPage() {
       const matchedKeyword =
         !keyword ||
         item.application_name.toLowerCase().includes(keyword) ||
+        (item.technical_type_name ?? "").toLowerCase().includes(keyword) ||
+        (item.technical_type_code ?? "").toLowerCase().includes(keyword) ||
         item.question_summary.toLowerCase().includes(keyword) ||
         item.status.toLowerCase().includes(keyword) ||
         (item.final_decision ?? "").toLowerCase().includes(keyword) ||
+        parseBusinessTags(item.business_tags_json).some((tag) =>
+          tag.toLowerCase().includes(keyword)
+        ) ||
         operational.label.toLowerCase().includes(keyword);
       if (!matchedKeyword) return false;
-      if (stateFilter === "all") return true;
-      return operational.label === stateFilter;
+      if (stateFilter !== "all" && operational.label !== stateFilter) return false;
+      if (technicalTypeFilter !== "all" && item.technical_type_code !== technicalTypeFilter) {
+        return false;
+      }
+      if (
+        businessTagFilter !== "all" &&
+        !parseBusinessTags(item.business_tags_json).includes(businessTagFilter)
+      ) {
+        return false;
+      }
+      return true;
     });
-  }, [filter, qas, stateFilter]);
+  }, [businessTagFilter, filter, qas, stateFilter, technicalTypeFilter]);
 
   const summary = useMemo(() => {
     return qas.reduce(
@@ -126,6 +168,30 @@ export default function AdminQasPage() {
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
           />
+          <select
+            className="field min-w-[180px]"
+            value={technicalTypeFilter}
+            onChange={(event) => setTechnicalTypeFilter(event.target.value)}
+          >
+            <option value="all">全部技术类型</option>
+            {technicalTypes.map((item) => (
+              <option key={item.id} value={item.code}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+          <select
+            className="field min-w-[180px]"
+            value={businessTagFilter}
+            onChange={(event) => setBusinessTagFilter(event.target.value)}
+          >
+            <option value="all">全部业务标签</option>
+            {businessTags.map((item) => (
+              <option key={item.id} value={item.code}>
+                {item.name}
+              </option>
+            ))}
+          </select>
           <Button variant="secondary" onClick={() => void loadQas()}>
             刷新列表
           </Button>
@@ -156,17 +222,19 @@ export default function AdminQasPage() {
               当前 {filtered.length} 条 / 全部 {qas.length} 条
             </p>
           </div>
-          <select
-            className="field min-w-[220px]"
-            value={stateFilter}
-            onChange={(event) => setStateFilter(event.target.value)}
-          >
-            <option value="all">全部阶段</option>
-            <option value="待聚合">待聚合</option>
-            <option value="待最终确认">待最终确认</option>
-            <option value="聚合与最终不一致">聚合与最终不一致</option>
-            <option value="已闭环">已闭环</option>
-          </select>
+          <div className="flex gap-3">
+            <select
+              className="field min-w-[220px]"
+              value={stateFilter}
+              onChange={(event) => setStateFilter(event.target.value)}
+            >
+              <option value="all">全部阶段</option>
+              <option value="待聚合">待聚合</option>
+              <option value="待最终确认">待最终确认</option>
+              <option value="聚合与最终不一致">聚合与最终不一致</option>
+              <option value="已闭环">已闭环</option>
+            </select>
+          </div>
         </CardHeader>
         <CardContent className="space-y-3">
           {error ? (
@@ -192,10 +260,18 @@ export default function AdminQasPage() {
                     <div className="flex flex-wrap items-center gap-2">
                       <p className="font-medium">{item.external_id || `QA-${item.id}`}</p>
                       <Badge variant="muted">{item.application_name}</Badge>
+                      {item.technical_type_name ? (
+                        <Badge variant="warning">{item.technical_type_name}</Badge>
+                      ) : null}
                       <Badge variant={operational.variant}>{operational.label}</Badge>
                       <Badge variant={decisionVariant(item.final_decision)}>
                         {decisionLabel(item.final_decision)}
                       </Badge>
+                      {parseBusinessTags(item.business_tags_json).map((tag) => (
+                        <Badge key={`${item.id}-${tag}`} variant="muted">
+                          {tag}
+                        </Badge>
+                      ))}
                     </div>
                     <p className="text-base">{item.question_summary}</p>
                     <p className="text-sm leading-7 text-muted-foreground">

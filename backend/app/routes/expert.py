@@ -24,6 +24,9 @@ class DraftPayload(BaseModel):
     relevance_rating: Optional[str] = None
     clarity_rating: Optional[str] = None
     risk_flag: Optional[str] = None
+    reasoning_completeness: Optional[str] = None
+    reasoning_consistency: Optional[str] = None
+    reasoning_support: Optional[str] = None
     overall_decision: Optional[str] = None
     quick_comment_codes: List[str] = Field(default_factory=list)
     adopted_rewrite_answer_id: Optional[int] = None
@@ -35,6 +38,9 @@ class SubmitPayload(BaseModel):
     relevance_rating: str
     clarity_rating: str
     risk_flag: str
+    reasoning_completeness: Optional[str] = None
+    reasoning_consistency: Optional[str] = None
+    reasoning_support: Optional[str] = None
     overall_decision: str
     quick_comment_codes: List[str] = Field(default_factory=list)
     adopted_rewrite_answer_id: Optional[int] = None
@@ -130,10 +136,14 @@ def list_tasks(
           t.assigned_at,
           t.expires_at,
           a.name AS application_name,
+          q.business_tags_json,
+          tt.code AS technical_type_code,
+          tt.name AS technical_type_name,
           q.question_text
         FROM evaluation_tasks t
         JOIN qa_items q ON q.id = t.qa_item_id
         JOIN applications a ON a.id = q.application_id
+        LEFT JOIN technical_types tt ON tt.id = q.technical_type_id
     """
     params: Tuple[object, ...] = (current_user["id"],)
     query += " WHERE t.expert_user_id = ?"
@@ -163,9 +173,10 @@ def get_task_detail(
     with db_cursor() as cursor:
         qa_item = cursor.execute(
             """
-            SELECT q.*, a.name AS application_name
+            SELECT q.*, a.name AS application_name, tt.code AS technical_type_code, tt.name AS technical_type_name
             FROM qa_items q
             JOIN applications a ON a.id = q.application_id
+            LEFT JOIN technical_types tt ON tt.id = q.technical_type_id
             WHERE q.id = ?
             """,
             (task["qa_item_id"],),
@@ -204,6 +215,26 @@ def get_task_detail(
             """,
             (task_id,),
         ).fetchone()
+        submitted_record = cursor.execute(
+            """
+            SELECT
+              correctness_rating,
+              completeness_rating,
+              relevance_rating,
+              clarity_rating,
+              risk_flag,
+              reasoning_completeness,
+              reasoning_consistency,
+              reasoning_support,
+              overall_decision,
+              quick_comment_codes,
+              adopted_rewrite_answer_id,
+              created_at
+            FROM evaluation_records
+            WHERE task_id = ?
+            """,
+            (task_id,),
+        ).fetchone()
 
     return {
         "code": 0,
@@ -220,6 +251,28 @@ def get_task_detail(
                     "updated_at": draft["updated_at"],
                 }
                 if draft
+                else None
+            ),
+            "submitted_record": (
+                {
+                    "payload": {
+                        "correctness_rating": submitted_record["correctness_rating"],
+                        "completeness_rating": submitted_record["completeness_rating"],
+                        "relevance_rating": submitted_record["relevance_rating"],
+                        "clarity_rating": submitted_record["clarity_rating"],
+                        "risk_flag": submitted_record["risk_flag"],
+                        "reasoning_completeness": submitted_record["reasoning_completeness"],
+                        "reasoning_consistency": submitted_record["reasoning_consistency"],
+                        "reasoning_support": submitted_record["reasoning_support"],
+                        "overall_decision": submitted_record["overall_decision"],
+                        "quick_comment_codes": json.loads(
+                            submitted_record["quick_comment_codes"] or "[]"
+                        ),
+                        "adopted_rewrite_answer_id": submitted_record["adopted_rewrite_answer_id"],
+                    },
+                    "updated_at": submitted_record["created_at"],
+                }
+                if submitted_record
                 else None
             ),
         },
@@ -287,29 +340,35 @@ def submit_task(
     current_user: CurrentUser = Depends(require_expert),
 ):
     task = get_task(task_id, current_user["id"])
+    if task["status"] in {"expired", "cancelled"}:
+        raise HTTPException(status_code=409, detail=f"task is {task['status']}")
     created_at = now_iso()
     with db_cursor() as cursor:
-        existing_record = cursor.execute(
-            """
-            SELECT id
-            FROM evaluation_records
-            WHERE task_id = ?
-            """,
-            (task_id,),
-        ).fetchone()
-        if existing_record:
-            raise HTTPException(status_code=409, detail="task already submitted")
-        if task["status"] == "submitted":
-            raise HTTPException(status_code=409, detail="task already submitted")
-
         cursor.execute(
             """
             INSERT INTO evaluation_records (
               task_id, qa_item_id, answer_id, expert_user_id,
               correctness_rating, completeness_rating, relevance_rating,
-              clarity_rating, risk_flag, overall_decision,
+              clarity_rating, risk_flag, reasoning_completeness,
+              reasoning_consistency, reasoning_support, overall_decision,
               quick_comment_codes, adopted_rewrite_answer_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(task_id) DO UPDATE SET
+              qa_item_id = excluded.qa_item_id,
+              answer_id = excluded.answer_id,
+              expert_user_id = excluded.expert_user_id,
+              correctness_rating = excluded.correctness_rating,
+              completeness_rating = excluded.completeness_rating,
+              relevance_rating = excluded.relevance_rating,
+              clarity_rating = excluded.clarity_rating,
+              risk_flag = excluded.risk_flag,
+              reasoning_completeness = excluded.reasoning_completeness,
+              reasoning_consistency = excluded.reasoning_consistency,
+              reasoning_support = excluded.reasoning_support,
+              overall_decision = excluded.overall_decision,
+              quick_comment_codes = excluded.quick_comment_codes,
+              adopted_rewrite_answer_id = excluded.adopted_rewrite_answer_id,
+              created_at = excluded.created_at
             """,
             (
                 task["id"],
@@ -321,6 +380,9 @@ def submit_task(
                 payload.relevance_rating,
                 payload.clarity_rating,
                 payload.risk_flag,
+                payload.reasoning_completeness,
+                payload.reasoning_consistency,
+                payload.reasoning_support,
                 payload.overall_decision,
                 json.dumps(payload.quick_comment_codes, ensure_ascii=False),
                 payload.adopted_rewrite_answer_id,

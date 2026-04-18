@@ -12,7 +12,7 @@ export default function ExpertLayout({
   children
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <AuthGuard role="expert">
+    <AuthGuard role="expert" allowAdmin>
       <AppShell
         title="专家评测端"
         subtitle="围绕单个任务完成结构化打分、LLM 辅助分析和候选标准答案确认。"

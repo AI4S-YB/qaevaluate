@@ -31,6 +31,26 @@ CREATE TABLE IF NOT EXISTS applications (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS technical_types (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 100,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS business_tags (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 100,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS expert_applications (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   expert_user_id INTEGER NOT NULL,
@@ -71,6 +91,8 @@ CREATE TABLE IF NOT EXISTS dataset_batch_failures (
 CREATE TABLE IF NOT EXISTS qa_items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   external_id TEXT,
+  technical_type_id INTEGER,
+  business_tags_json TEXT,
   application_id INTEGER NOT NULL,
   dataset_batch_id INTEGER,
   question_text TEXT NOT NULL,
@@ -80,6 +102,7 @@ CREATE TABLE IF NOT EXISTS qa_items (
   source TEXT,
   status TEXT NOT NULL CHECK(status IN ('draft', 'active', 'in_review', 'reviewed', 'archived')),
   created_at TEXT NOT NULL,
+  FOREIGN KEY (technical_type_id) REFERENCES technical_types(id),
   FOREIGN KEY (application_id) REFERENCES applications(id),
   FOREIGN KEY (dataset_batch_id) REFERENCES dataset_batches(id)
 );
@@ -135,6 +158,9 @@ CREATE TABLE IF NOT EXISTS evaluation_records (
   clarity_rating TEXT NOT NULL CHECK(clarity_rating IN ('clear', 'normal', 'unclear')),
   risk_flag TEXT NOT NULL CHECK(risk_flag IN ('none', 'factual', 'compliance', 'hallucination')),
   overall_decision TEXT NOT NULL CHECK(overall_decision IN ('pass', 'rewrite', 'fail')),
+  reasoning_completeness TEXT CHECK(reasoning_completeness IN ('strong', 'medium', 'weak')),
+  reasoning_consistency TEXT CHECK(reasoning_consistency IN ('strong', 'medium', 'weak')),
+  reasoning_support TEXT CHECK(reasoning_support IN ('strong', 'medium', 'weak')),
   quick_comment_codes TEXT,
   adopted_rewrite_answer_id INTEGER,
   created_at TEXT NOT NULL,
@@ -224,7 +250,10 @@ CREATE TABLE IF NOT EXISTS export_jobs (
 
 CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_token ON auth_sessions(token);
+CREATE INDEX IF NOT EXISTS idx_technical_types_active ON technical_types(is_active, sort_order);
+CREATE INDEX IF NOT EXISTS idx_business_tags_active ON business_tags(is_active, sort_order);
 CREATE INDEX IF NOT EXISTS idx_qa_items_app_status ON qa_items(application_id, status);
+CREATE INDEX IF NOT EXISTS idx_qa_items_technical_type ON qa_items(technical_type_id);
 CREATE INDEX IF NOT EXISTS idx_qa_answers_item_type ON qa_answers(qa_item_id, answer_type);
 CREATE INDEX IF NOT EXISTS idx_tasks_expert_status ON evaluation_tasks(expert_user_id, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_answer_status ON evaluation_tasks(answer_id, status);

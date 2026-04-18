@@ -6,7 +6,8 @@ import {
   apiFetch,
   type ImportBatch,
   type ImportFailure,
-  type ImportFailureDetail
+  type ImportFailureDetail,
+  type TaxonomyItem
 } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,8 +21,41 @@ function formatTime(value: string) {
   return value.replace("T", " ").slice(0, 16);
 }
 
+function classifyImportError(message: string) {
+  if (message.includes("technical_type not found")) {
+    return {
+      label: "技术类型不存在",
+      hint: "导入记录中的 technical_type 未在后台配置中启用。"
+    };
+  }
+  if (message.includes("business_tag not found")) {
+    return {
+      label: "业务标签不存在",
+      hint: "导入记录中的 business_tags 包含未定义或未启用标签。"
+    };
+  }
+  if (message.includes("business_tags must be an array")) {
+    return {
+      label: "业务标签格式错误",
+      hint: "business_tags 必须是字符串数组。"
+    };
+  }
+  if (message.includes("missing answer")) {
+    return {
+      label: "答案缺失",
+      hint: "answer 为空，且 candidate_answers 中也没有可用答案。"
+    };
+  }
+  return {
+    label: "通用导入错误",
+    hint: "请检查字段名、字段类型和必填项。"
+  };
+}
+
 export default function AdminImportsPage() {
   const [batches, setBatches] = useState<ImportBatch[]>([]);
+  const [technicalTypes, setTechnicalTypes] = useState<TaxonomyItem[]>([]);
+  const [businessTags, setBusinessTags] = useState<TaxonomyItem[]>([]);
   const [failureDetail, setFailureDetail] = useState<ImportFailureDetail | null>(null);
   const [selectedBatchId, setSelectedBatchId] = useState<number | null>(null);
   const [selectedFailureId, setSelectedFailureId] = useState<number | null>(null);
@@ -49,6 +83,19 @@ export default function AdminImportsPage() {
       setError(err instanceof Error ? err.message : "加载批次失败");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadTaxonomy() {
+    try {
+      const [technicalTypeData, businessTagData] = await Promise.all([
+        apiFetch<TaxonomyItem[]>("/api/admin/technical-types"),
+        apiFetch<TaxonomyItem[]>("/api/admin/business-tags")
+      ]);
+      setTechnicalTypes(technicalTypeData.filter((item) => item.is_active));
+      setBusinessTags(businessTagData.filter((item) => item.is_active));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载分类配置失败");
     }
   }
 
@@ -112,6 +159,7 @@ export default function AdminImportsPage() {
 
   useEffect(() => {
     void loadBatches();
+    void loadTaxonomy();
   }, []);
 
   const selectedFailure =
@@ -122,13 +170,78 @@ export default function AdminImportsPage() {
     () => batches.filter((batch) => batch.fail_count > 0),
     [batches]
   );
+  const selectedFailureCategory = selectedFailure
+    ? classifyImportError(selectedFailure.error_message)
+    : null;
 
   return (
     <div className="space-y-6">
       <div>
         <p className="text-sm text-muted-foreground">数据导入</p>
-        <h2 className="mt-2 font-serif text-4xl">上传 JSON 并以批次跟踪导入状态</h2>
+        <h2 className="mt-2 font-serif text-4xl">上传 JSON，并在导入入口就锁定技术类型与业务标签</h2>
       </div>
+      <section className="grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
+        <Card>
+          <CardHeader>
+            <CardTitle>导入字段规范</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="rounded-[28px] border border-border bg-stone-50 p-5 text-sm leading-7 text-muted-foreground">
+              每条记录至少应包含 `application`、`question`、`answer`、`technical_type`，
+              其中 `business_tags` 为可选数组。MVP 当前要求每条 QA 只能有一个技术类型。
+            </div>
+            <pre className="overflow-x-auto rounded-3xl border border-border bg-white p-4 text-xs leading-6 text-muted-foreground">
+{`[
+  {
+    "id": "qa_001",
+    "application": "农业问答",
+    "question": "番茄晚疫病如何防治？",
+    "answer": "可通过轮作、降低湿度、及时喷施保护性杀菌剂等方式防治。",
+    "technical_type": "cot_qa",
+    "business_tags": ["pest_control", "tomato"],
+    "context": "露地栽培，近期连续阴雨。"
+  }
+]`}
+            </pre>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>当前可用分类</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <p className="mb-2 text-sm font-medium">技术类型</p>
+              <div className="flex flex-wrap gap-2">
+                {technicalTypes.map((item) => (
+                  <Badge key={item.id} variant="warning">
+                    {item.code}
+                  </Badge>
+                ))}
+                {technicalTypes.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">当前没有启用的技术类型。</p>
+                ) : null}
+              </div>
+            </div>
+            <div>
+              <p className="mb-2 text-sm font-medium">业务标签</p>
+              <div className="flex flex-wrap gap-2">
+                {businessTags.map((item) => (
+                  <Badge key={item.id} variant="muted">
+                    {item.code}
+                  </Badge>
+                ))}
+                {businessTags.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">当前没有启用的业务标签。</p>
+                ) : null}
+              </div>
+            </div>
+            <div className="rounded-[28px] border border-dashed border-border bg-stone-50 p-4 text-sm leading-7 text-muted-foreground">
+              如果导入数据里的 `technical_type` 或 `business_tags` 不在这里，解析任务会进入失败明细。
+            </div>
+          </CardContent>
+        </Card>
+      </section>
       <section className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
         <Card>
           <CardHeader>
@@ -333,6 +446,14 @@ export default function AdminImportsPage() {
                       <p className="text-sm font-medium text-amber-900">
                         错误原因 / Row #{selectedFailure.row_no}
                       </p>
+                      {selectedFailureCategory ? (
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <Badge variant="warning">{selectedFailureCategory.label}</Badge>
+                          <span className="text-xs text-amber-700">
+                            {selectedFailureCategory.hint}
+                          </span>
+                        </div>
+                      ) : null}
                       <p className="mt-2 text-sm leading-7 text-amber-800">
                         {selectedFailure.error_message}
                       </p>

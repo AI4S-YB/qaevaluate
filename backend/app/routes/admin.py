@@ -44,6 +44,20 @@ class ExportCreatePayload(BaseModel):
     file_format: str = Field(default="json", alias="format")
 
 
+class TaxonomyCreatePayload(BaseModel):
+    code: str
+    name: str
+    description: Optional[str] = None
+    sort_order: int = 100
+
+
+class TaxonomyUpdatePayload(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+    sort_order: Optional[int] = None
+
+
 def queue_file(path: Path) -> dict:
     payload = json.loads(path.read_text(encoding="utf-8"))
     error_path = path.with_suffix(".error.txt")
@@ -85,6 +99,31 @@ def serialize_export_job(row) -> dict:
     file_path = item.get("file_path")
     item["file_name"] = Path(file_path).name if file_path else None
     return item
+
+
+def serialize_taxonomy(row) -> dict:
+    item = dict(row)
+    item["is_active"] = bool(item["is_active"])
+    return item
+
+
+def create_taxonomy_entry(table_name: str, payload: TaxonomyCreatePayload) -> int:
+    with db_cursor() as cursor:
+        existing = cursor.execute(
+            f"SELECT id FROM {table_name} WHERE code = ? OR name = ?",
+            (payload.code, payload.name),
+        ).fetchone()
+        if existing:
+            raise HTTPException(status_code=400, detail=f"{table_name} already exists")
+        cursor.execute(
+            f"""
+            INSERT INTO {table_name} (
+              code, name, description, is_active, sort_order, created_at
+            ) VALUES (?, ?, ?, 1, ?, ?)
+            """,
+            (payload.code, payload.name, payload.description, payload.sort_order, now_iso()),
+        )
+        return int(cursor.lastrowid)
 
 
 @router.get("/dashboard")
@@ -167,6 +206,124 @@ def get_dashboard(current_user: CurrentUser = Depends(require_admin)):
             ],
         },
     }
+
+
+@router.get("/technical-types")
+def list_technical_types(current_user: CurrentUser = Depends(require_admin)):
+    with db_cursor() as cursor:
+        rows = cursor.execute(
+            """
+            SELECT id, code, name, description, is_active, sort_order, created_at
+            FROM technical_types
+            ORDER BY is_active DESC, sort_order ASC, id ASC
+            """
+        ).fetchall()
+    return {
+        "code": 0,
+        "message": "ok",
+        "data": [serialize_taxonomy(row) for row in rows],
+    }
+
+
+@router.post("/technical-types")
+def create_technical_type(
+    payload: TaxonomyCreatePayload,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    taxonomy_id = create_taxonomy_entry("technical_types", payload)
+    return {"code": 0, "message": "ok", "data": {"id": taxonomy_id}}
+
+
+@router.patch("/technical-types/{taxonomy_id}")
+def update_technical_type(
+    taxonomy_id: int,
+    payload: TaxonomyUpdatePayload,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        return {"code": 0, "message": "ok", "data": {"id": taxonomy_id}}
+    with db_cursor() as cursor:
+        existing = cursor.execute(
+            "SELECT id FROM technical_types WHERE id = ?",
+            (taxonomy_id,),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="technical type not found")
+        fields = []
+        values: list[object] = []
+        for key, value in updates.items():
+            if key == "is_active":
+                fields.append("is_active = ?")
+                values.append(1 if value else 0)
+            else:
+                fields.append(f"{key} = ?")
+                values.append(value)
+        values.append(taxonomy_id)
+        cursor.execute(
+            f"UPDATE technical_types SET {', '.join(fields)} WHERE id = ?",
+            tuple(values),
+        )
+    return {"code": 0, "message": "ok", "data": {"id": taxonomy_id}}
+
+
+@router.get("/business-tags")
+def list_business_tags(current_user: CurrentUser = Depends(require_admin)):
+    with db_cursor() as cursor:
+        rows = cursor.execute(
+            """
+            SELECT id, code, name, description, is_active, sort_order, created_at
+            FROM business_tags
+            ORDER BY is_active DESC, sort_order ASC, id ASC
+            """
+        ).fetchall()
+    return {
+        "code": 0,
+        "message": "ok",
+        "data": [serialize_taxonomy(row) for row in rows],
+    }
+
+
+@router.post("/business-tags")
+def create_business_tag(
+    payload: TaxonomyCreatePayload,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    taxonomy_id = create_taxonomy_entry("business_tags", payload)
+    return {"code": 0, "message": "ok", "data": {"id": taxonomy_id}}
+
+
+@router.patch("/business-tags/{taxonomy_id}")
+def update_business_tag(
+    taxonomy_id: int,
+    payload: TaxonomyUpdatePayload,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        return {"code": 0, "message": "ok", "data": {"id": taxonomy_id}}
+    with db_cursor() as cursor:
+        existing = cursor.execute(
+            "SELECT id FROM business_tags WHERE id = ?",
+            (taxonomy_id,),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="business tag not found")
+        fields = []
+        values: list[object] = []
+        for key, value in updates.items():
+            if key == "is_active":
+                fields.append("is_active = ?")
+                values.append(1 if value else 0)
+            else:
+                fields.append(f"{key} = ?")
+                values.append(value)
+        values.append(taxonomy_id)
+        cursor.execute(
+            f"UPDATE business_tags SET {', '.join(fields)} WHERE id = ?",
+            tuple(values),
+        )
+    return {"code": 0, "message": "ok", "data": {"id": taxonomy_id}}
 
 
 @router.get("/analytics/summary")
@@ -660,7 +817,10 @@ def list_qas(current_user: CurrentUser = Depends(require_admin)):
               q.external_id,
               q.question_text,
               q.status,
+              q.business_tags_json,
               a.name AS application_name,
+              tt.code AS technical_type_code,
+              tt.name AS technical_type_name,
               agg.review_count,
               agg.final_decision,
               agg.agreement_score,
@@ -668,6 +828,7 @@ def list_qas(current_user: CurrentUser = Depends(require_admin)):
               agg.final_standard_answer_id
             FROM qa_items q
             JOIN applications a ON a.id = q.application_id
+            LEFT JOIN technical_types tt ON tt.id = q.technical_type_id
             LEFT JOIN qa_aggregates agg ON agg.qa_item_id = q.id
             ORDER BY q.id DESC
             """
@@ -686,9 +847,10 @@ def get_qa_detail(qa_id: int, current_user: CurrentUser = Depends(require_admin)
     with db_cursor() as cursor:
         qa_item = cursor.execute(
             """
-            SELECT q.*, a.name AS application_name
+            SELECT q.*, a.name AS application_name, tt.code AS technical_type_code, tt.name AS technical_type_name
             FROM qa_items q
             JOIN applications a ON a.id = q.application_id
+            LEFT JOIN technical_types tt ON tt.id = q.technical_type_id
             WHERE q.id = ?
             """,
             (qa_id,),

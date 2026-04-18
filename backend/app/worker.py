@@ -86,28 +86,60 @@ def import_batch(batch_id: int) -> None:
                 if not isinstance(item, dict):
                     raise ValueError("row must be a JSON object")
                 application_name = item["application"]
+                technical_type_code = item["technical_type"]
+                business_tags = item.get("business_tags", [])
                 question = item["question"]
                 answer = item.get("answer")
                 if not answer and item.get("candidate_answers"):
                     answer = item["candidate_answers"][0]["answer"]
                 if not answer:
                     raise ValueError("missing answer")
+                if not isinstance(business_tags, list):
+                    raise ValueError("business_tags must be an array")
 
                 application_id = ensure_application(cursor, application_name)
+                technical_type = cursor.execute(
+                    """
+                    SELECT id
+                    FROM technical_types
+                    WHERE code = ? AND is_active = 1
+                    """,
+                    (technical_type_code,),
+                ).fetchone()
+                if not technical_type:
+                    raise ValueError(f"technical_type not found: {technical_type_code}")
+
+                if business_tags:
+                    tag_rows = cursor.execute(
+                        f"""
+                        SELECT code
+                        FROM business_tags
+                        WHERE code IN ({",".join("?" for _ in business_tags)}) AND is_active = 1
+                        """,
+                        tuple(business_tags),
+                    ).fetchall()
+                    found_codes = {row["code"] for row in tag_rows}
+                    missing_codes = [code for code in business_tags if code not in found_codes]
+                    if missing_codes:
+                        raise ValueError(f"business_tag not found: {missing_codes[0]}")
+
                 cursor.execute(
                     """
                     INSERT INTO qa_items (
-                      external_id, application_id, dataset_batch_id, question_text,
-                      context_text, tags_json, difficulty, source, status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+                      external_id, technical_type_id, business_tags_json, application_id,
+                      dataset_batch_id, question_text, context_text, tags_json,
+                      difficulty, source, status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
                     """,
                     (
                         item.get("id"),
+                        technical_type["id"],
+                        json.dumps(business_tags, ensure_ascii=False),
                         application_id,
                         batch_id,
                         question,
                         item.get("context"),
-                        json.dumps(item.get("tags", []), ensure_ascii=False),
+                        json.dumps(business_tags, ensure_ascii=False),
                         item.get("difficulty"),
                         item.get("source"),
                         now_iso(),

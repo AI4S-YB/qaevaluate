@@ -39,6 +39,16 @@ function formatTime(value: string) {
   return value.replace("T", " ").slice(0, 16);
 }
 
+function parseBusinessTags(value: string | null) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as string[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 export default function ExpertDashboardPage() {
   const [profile, setProfile] = useState<MeProfile | null>(null);
   const [tasks, setTasks] = useState<ExpertTaskListItem[]>([]);
@@ -151,12 +161,20 @@ export default function ExpertDashboardPage() {
                 <div className="space-y-1">
                   <div className="flex flex-wrap gap-2">
                     <Badge variant="muted">{task.application_name}</Badge>
+                    {task.technical_type_name ? (
+                      <Badge variant="warning">{task.technical_type_name}</Badge>
+                    ) : null}
                     <Badge variant={task.task_type === "dispute_review" ? "warning" : "default"}>
                       {taskTypeLabel(task.task_type)}
                     </Badge>
                     <Badge variant={task.status === "in_progress" ? "success" : "muted"}>
                       {task.status}
                     </Badge>
+                    {parseBusinessTags(task.business_tags_json).map((tag) => (
+                      <Badge key={`${task.id}-${tag}`} variant="muted">
+                        {tag}
+                      </Badge>
+                    ))}
                   </div>
                   <p className="font-medium">{task.question_summary}</p>
                 </div>
