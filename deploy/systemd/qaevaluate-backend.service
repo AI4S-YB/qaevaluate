@@ -1,0 +1,20 @@
+[Unit]
+Description=QA Evaluate Backend API
+After=network.target
+
+[Service]
+Type=simple
+User=qaevaluate
+Group=qaevaluate
+WorkingDirectory=/srv/qaevaluate/current
+Environment=QAEVALUATE_ENV=production
+EnvironmentFile=-/srv/qaevaluate/current/.env
+EnvironmentFile=-/srv/qaevaluate/current/.env.production
+EnvironmentFile=-/srv/qaevaluate/current/.env.production.local
+ExecStart=/bin/bash -lc 'cd backend && exec .venv/bin/uvicorn app.main:app --host "${BACKEND_HOST:-127.0.0.1}" --port "${BACKEND_PORT:-8100}"'
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

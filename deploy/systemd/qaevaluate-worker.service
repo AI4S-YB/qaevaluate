@@ -1,0 +1,20 @@
+[Unit]
+Description=QA Evaluate Backend Worker
+After=network.target qaevaluate-backend.service
+
+[Service]
+Type=simple
+User=qaevaluate
+Group=qaevaluate
+WorkingDirectory=/srv/qaevaluate/current
+Environment=QAEVALUATE_ENV=production
+EnvironmentFile=-/srv/qaevaluate/current/.env
+EnvironmentFile=-/srv/qaevaluate/current/.env.production
+EnvironmentFile=-/srv/qaevaluate/current/.env.production.local
+ExecStart=/bin/bash -lc 'cd backend && exec .venv/bin/python -m app.worker'
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
