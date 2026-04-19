@@ -65,6 +65,8 @@ cp .env.production.example .env.production.local
 - `deploy/systemd/qaevaluate-backend.service`
 - `deploy/systemd/qaevaluate-worker.service`
 - `deploy/systemd/qaevaluate-frontend.service`
+- `deploy/systemd/qaevaluate-backup.service`
+- `deploy/systemd/qaevaluate-backup.timer`
 - `deploy/nginx/qaevaluate.conf`
 
 典型部署流程：
@@ -74,8 +76,10 @@ cd /srv/qaevaluate/current
 cp .env.production.example .env.production.local
 ./scripts/prepare-prod.sh
 sudo cp deploy/systemd/qaevaluate-*.service /etc/systemd/system/
+sudo cp deploy/systemd/qaevaluate-backup.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now qaevaluate-backend qaevaluate-worker qaevaluate-frontend
+sudo systemctl enable --now qaevaluate-backup.timer
 ```
 
 ## 备份与恢复
@@ -94,6 +98,12 @@ sudo systemctl enable --now qaevaluate-backend qaevaluate-worker qaevaluate-fron
 ./scripts/backup-db.sh production /srv/qaevaluate/backups/app-prod-latest.sqlite3
 ```
 
+清理旧备份，只保留最近 14 份：
+
+```bash
+./scripts/cleanup-backups.sh production 14
+```
+
 恢复前建议先停掉后端和 worker：
 
 ```bash
@@ -102,6 +112,12 @@ sudo systemctl enable --now qaevaluate-backend qaevaluate-worker qaevaluate-fron
 ```
 
 恢复脚本会在覆盖前自动为当前数据库再生成一份 `pre-restore` 快照。
+
+如果使用仓库内的 `systemd` 模板：
+
+- `qaevaluate-backup.service` 会执行一次备份并清理旧文件
+- `qaevaluate-backup.timer` 默认每天 `03:30` 触发
+- 可通过 `QAEVALUATE_BACKUP_KEEP_COUNT` 调整保留份数
 
 ## 环境隔离
 
