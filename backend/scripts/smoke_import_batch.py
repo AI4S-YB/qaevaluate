@@ -11,7 +11,11 @@ from urllib import error, request
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DB_PATH = ROOT / "backend" / "data" / "app.db"
+if str(ROOT / "backend") not in sys.path:
+    sys.path.insert(0, str(ROOT / "backend"))
+
+from app.config import APP_ENV, DB_PATH  # noqa: E402
+
 API_BASE = "http://127.0.0.1:8100"
 USERNAME = "admin"
 PASSWORD = "admin123"
@@ -219,4 +223,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    print(f"running smoke import against env={APP_ENV} db={DB_PATH}")
     raise SystemExit(main())

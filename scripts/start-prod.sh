@@ -9,6 +9,7 @@ BACKEND_HOST="${BACKEND_HOST:-0.0.0.0}"
 BACKEND_PORT="${BACKEND_PORT:-8100}"
 FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
 FRONTEND_PORT="${FRONTEND_PORT:-3100}"
+QAEVALUATE_ENV="${QAEVALUATE_ENV:-production}"
 
 BACKEND_PID=""
 WORKER_PID=""
@@ -45,6 +46,7 @@ echo "starting backend api in production mode on $BACKEND_HOST:$BACKEND_PORT"
 (
   cd "$BACKEND_DIR"
   source .venv/bin/activate
+  export QAEVALUATE_ENV
   exec uvicorn app.main:app --host "$BACKEND_HOST" --port "$BACKEND_PORT"
 ) &
 BACKEND_PID=$!
@@ -53,6 +55,7 @@ echo "starting backend worker in production mode"
 (
   cd "$BACKEND_DIR"
   source .venv/bin/activate
+  export QAEVALUATE_ENV
   exec python -m app.worker
 ) &
 WORKER_PID=$!
@@ -65,6 +68,7 @@ echo "starting frontend in production mode on $FRONTEND_HOST:$FRONTEND_PORT"
 FRONTEND_PID=$!
 
 echo "production services started"
+echo "env:      $QAEVALUATE_ENV"
 echo "frontend: http://127.0.0.1:$FRONTEND_PORT"
 echo "backend:  http://127.0.0.1:$BACKEND_PORT"
 echo "swagger:  http://127.0.0.1:$BACKEND_PORT/docs"

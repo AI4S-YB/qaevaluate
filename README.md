@@ -62,6 +62,28 @@ data/
   exports/
 ```
 
+## 环境隔离
+
+- 系统通过 `QAEVALUATE_ENV` 区分运行环境
+- 默认环境是 `development`
+- `./scripts/start-dev.sh` 会自动使用 `QAEVALUATE_ENV=development`
+- `./scripts/start-prod.sh` 会自动使用 `QAEVALUATE_ENV=production`
+
+不同环境默认会使用不同的数据目录：
+
+- 开发环境数据库：`backend/data/development/app.db`
+- 生产环境数据库：`backend/data/production/app.db`
+- 开发环境本地 LLM 密钥：`backend/data/development/llm_config_secrets.json`
+- 生产环境本地 LLM 密钥：`backend/data/production/llm_config_secrets.json`
+- 运行态目录：`data/development/` 与 `data/production/`
+
+如果需要，也可以通过环境变量手动覆盖：
+
+- `QAEVALUATE_DB_PATH`
+- `QAEVALUATE_LLM_SECRETS_PATH`
+- `QAEVALUATE_RUNTIME_DIR`
+- `QAEVALUATE_BACKEND_DATA_DIR`
+
 ## 本地启动
 
 ### 一键启动
@@ -89,6 +111,7 @@ data/
 - 开发模式会同时启动后端 API、worker 和前端开发服务器
 - 生产模式会先构建前端，再启动后端 API、worker 和前端生产服务
 - 默认端口固定为：前端 `3100`，后端 `8100`
+- 开发和生产默认不会共用同一个 SQLite 文件
 
 ### 1. 启动后端
 
@@ -97,9 +120,9 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python scripts/init_db.py
-python scripts/seed_demo.py
-uvicorn app.main:app --reload --port 8100
+QAEVALUATE_ENV=development python scripts/init_db.py
+QAEVALUATE_ENV=development python scripts/seed_demo.py
+QAEVALUATE_ENV=development uvicorn app.main:app --reload --port 8100
 ```
 
 启动后可访问：
@@ -152,7 +175,7 @@ npm run dev
 本地服务启动后，可运行导入冒烟脚本验证整条链路：
 
 ```bash
-python3 backend/scripts/smoke_import_batch.py
+QAEVALUATE_ENV=development python3 backend/scripts/smoke_import_batch.py
 ```
 
 脚本会自动完成以下动作：
@@ -179,3 +202,4 @@ python3 backend/scripts/smoke_import_batch.py
 
 - `docs/` 目录下的设计文档当前仅作为本地参考，已加入忽略规则，不纳入仓库跟踪
 - 数据文件、导出结果、队列运行态文件也已通过 `.gitignore` 排除
+- `seed_demo.py` 默认只允许在 `development` 环境执行，避免误向生产库写入测试数据

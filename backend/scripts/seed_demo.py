@@ -2,12 +2,14 @@ from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
+import os
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.config import APP_ENV, DB_PATH, IS_DEVELOPMENT
 from app.db import db_cursor, init_db
 
 
@@ -357,6 +359,11 @@ def ensure_answer(cursor, qa_item_id: int, answer_text: str):
 
 
 if __name__ == "__main__":
+    if not IS_DEVELOPMENT and os.getenv("QAEVALUATE_ALLOW_DEMO_SEED") != "1":
+        raise SystemExit(
+            f"refusing to seed demo data in env={APP_ENV}. "
+            "Set QAEVALUATE_ENV=development or QAEVALUATE_ALLOW_DEMO_SEED=1 to override."
+        )
     init_db()
     with db_cursor() as cursor:
         ensure_user(cursor, "admin", "admin123", "admin", "approved", "System Admin")
@@ -441,4 +448,7 @@ if __name__ == "__main__":
                     (qa_item_id, answer_id, expert_id, now_iso()),
                 )
 
-    print(f"seed data inserted: {len(QA_SEEDS)} qa items, {len(EXPERTS)} experts")
+    print(
+        f"seed data inserted for env={APP_ENV} db={DB_PATH}: "
+        f"{len(QA_SEEDS)} qa items, {len(EXPERTS)} experts"
+    )

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .config import EXPORT_DIR, QUEUE_DIR, UPLOAD_DIR
+from .config import APP_ENV, DB_PATH, EXPORT_DIR, QUEUE_DIR, UPLOAD_DIR
 from .db import init_db
 from .routes.admin import router as admin_router
 from .routes.applications import router as applications_router
@@ -23,6 +23,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 def startup() -> None:
+    print(f"[qaevaluate] startup env={APP_ENV} db={DB_PATH}")
     init_db()
     for path in (
         UPLOAD_DIR,
