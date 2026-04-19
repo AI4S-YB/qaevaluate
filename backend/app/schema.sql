@@ -55,12 +55,14 @@ CREATE TABLE IF NOT EXISTS business_tags (
 CREATE TABLE IF NOT EXISTS llm_configs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
+  provider_code TEXT NOT NULL DEFAULT 'custom_openai',
   provider_type TEXT NOT NULL CHECK(provider_type IN ('openai_compatible')),
   base_url TEXT NOT NULL,
   api_key TEXT NOT NULL,
   model_name TEXT NOT NULL,
   system_prompt TEXT,
   temperature REAL NOT NULL DEFAULT 0.2,
+  is_enabled INTEGER NOT NULL DEFAULT 1,
   is_active INTEGER NOT NULL DEFAULT 0,
   last_tested_at TEXT,
   last_test_status TEXT CHECK(last_test_status IN ('passed', 'failed')),
@@ -225,13 +227,17 @@ CREATE TABLE IF NOT EXISTS llm_sessions (
   qa_item_id INTEGER NOT NULL,
   answer_id INTEGER NOT NULL,
   expert_user_id INTEGER NOT NULL,
+  llm_config_id INTEGER,
+  llm_config_name TEXT,
+  llm_model_name TEXT,
   purpose TEXT NOT NULL CHECK(purpose IN ('fact_check', 'rewrite', 'risk_check', 'compare')),
   status TEXT NOT NULL CHECK(status IN ('active', 'completed', 'failed')),
   created_at TEXT NOT NULL,
   FOREIGN KEY (task_id) REFERENCES evaluation_tasks(id),
   FOREIGN KEY (qa_item_id) REFERENCES qa_items(id),
   FOREIGN KEY (answer_id) REFERENCES qa_answers(id),
-  FOREIGN KEY (expert_user_id) REFERENCES users(id)
+  FOREIGN KEY (expert_user_id) REFERENCES users(id),
+  FOREIGN KEY (llm_config_id) REFERENCES llm_configs(id)
 );
 
 CREATE TABLE IF NOT EXISTS llm_messages (

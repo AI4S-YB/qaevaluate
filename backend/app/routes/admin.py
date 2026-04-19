@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from ..auth import CurrentUser, require_admin
-from ..config import QUEUE_DIR, UPLOAD_DIR
+from ..config import APP_ENV, DB_PATH, EXPORT_DIR, QUEUE_DIR, RUNTIME_DATA_DIR, UPLOAD_DIR
 from ..db import db_cursor
 from ..jobs import queue_job
 from ..llm_client import LlmClientError, call_openai_compatible_chat
@@ -80,13 +80,19 @@ class TaxonomyUpdatePayload(BaseModel):
 
 class LlmConfigPayload(BaseModel):
     name: str
+    provider_code: str = "custom_openai"
     provider_type: str = "openai_compatible"
     base_url: str
     api_key: str
     model_name: str
     system_prompt: Optional[str] = None
     temperature: float = 0.2
+    is_enabled: bool = True
     is_active: bool = False
+
+
+class LlmConfigEnablePayload(BaseModel):
+    is_enabled: bool
 
 
 def queue_file(path: Path) -> dict:
@@ -125,6 +131,16 @@ def iter_queue_jobs(statuses: tuple[str, ...] = ("pending", "processing", "done"
     return jobs
 
 
+def serialize_runtime_file(path: Path) -> dict:
+    return {
+        "name": path.name,
+        "size_bytes": path.stat().st_size,
+        "updated_at": datetime.utcfromtimestamp(path.stat().st_mtime)
+        .replace(microsecond=0)
+        .isoformat(),
+    }
+
+
 def serialize_export_job(row) -> dict:
     item = dict(row)
     file_path = item.get("file_path")
@@ -142,6 +158,7 @@ def serialize_llm_config(row) -> dict:
     item = dict(row)
     fallback_api_key = item.pop("api_key", None)
     api_key = get_llm_api_key(item["id"], fallback_api_key)
+    item["is_enabled"] = bool(item["is_enabled"])
     item["is_active"] = bool(item["is_active"])
     item["api_key_masked"] = mask_api_key(api_key)
     item["has_api_key"] = bool(api_key)
@@ -245,6 +262,115 @@ def get_dashboard(current_user: CurrentUser = Depends(require_admin)):
                 }
                 for row in application_progress
             ],
+        },
+    }
+
+
+@router.get("/system-status")
+def get_system_status(current_user: CurrentUser = Depends(require_admin)):
+    queue_jobs = iter_queue_jobs()
+    queue_summary = {
+        "pending": sum(1 for job in queue_jobs if job["status"] == "pending"),
+        "processing": sum(1 for job in queue_jobs if job["status"] == "processing"),
+        "done": sum(1 for job in queue_jobs if job["status"] == "done"),
+        "failed": sum(1 for job in queue_jobs if job["status"] == "failed"),
+    }
+    recent_failed_jobs = [job for job in queue_jobs if job["status"] == "failed"][:5]
+    recent_pending_jobs = [job for job in queue_jobs if job["status"] == "pending"][:5]
+
+    backup_dir = RUNTIME_DATA_DIR / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup_files = sorted(
+        backup_dir.glob("*.sqlite3"),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+
+    uploads = sorted(
+        UPLOAD_DIR.glob("*"),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+    exports = sorted(
+        EXPORT_DIR.glob("*"),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+
+    with db_cursor() as cursor:
+        llm_rows = cursor.execute(
+            """
+            SELECT
+              id,
+              name,
+              provider_code,
+              provider_type,
+              base_url,
+              api_key,
+              model_name,
+              system_prompt,
+              temperature,
+              is_enabled,
+              is_active,
+              last_tested_at,
+              last_test_status,
+              last_test_message,
+              last_test_latency_ms,
+              created_at,
+              updated_at
+            FROM llm_configs
+            ORDER BY is_active DESC, id DESC
+            """
+        ).fetchall()
+
+    llm_configs = [serialize_llm_config(row) for row in llm_rows]
+    active_llm_config = next((item for item in llm_configs if item["is_active"]), None)
+
+    db_exists = DB_PATH.exists()
+    db_size_bytes = DB_PATH.stat().st_size if db_exists else 0
+
+    return {
+        "code": 0,
+        "message": "ok",
+        "data": {
+            "environment": {
+                "app_env": APP_ENV,
+                "database": {
+                    "path": str(DB_PATH),
+                    "exists": db_exists,
+                    "size_bytes": db_size_bytes,
+                },
+                "runtime": {
+                    "path": str(RUNTIME_DATA_DIR),
+                    "uploads_count": len(uploads),
+                    "exports_count": len(exports),
+                },
+            },
+            "llm": {
+                "total_configs": len(llm_configs),
+                "active_config": active_llm_config,
+                "passed_count": sum(
+                    1 for item in llm_configs if item["last_test_status"] == "passed"
+                ),
+                "failed_count": sum(
+                    1 for item in llm_configs if item["last_test_status"] == "failed"
+                ),
+                "missing_api_key_count": sum(
+                    1 for item in llm_configs if not item["has_api_key"]
+                ),
+                "configs": llm_configs[:6],
+            },
+            "queue": {
+                "summary": queue_summary,
+                "recent_failed_jobs": recent_failed_jobs,
+                "recent_pending_jobs": recent_pending_jobs,
+            },
+            "backups": {
+                "directory": str(backup_dir),
+                "total_files": len(backup_files),
+                "latest_file": serialize_runtime_file(backup_files[0]) if backup_files else None,
+                "files": [serialize_runtime_file(path) for path in backup_files[:8]],
+            },
         },
     }
 
@@ -375,12 +501,14 @@ def list_llm_configs(current_user: CurrentUser = Depends(require_admin)):
             SELECT
               id,
               name,
+              provider_code,
               provider_type,
               base_url,
               api_key,
               model_name,
               system_prompt,
               temperature,
+              is_enabled,
               is_active,
               last_tested_at,
               last_test_status,
@@ -411,25 +539,28 @@ def create_llm_config(
         ).fetchone()
         if existing:
             raise HTTPException(status_code=400, detail="llm config already exists")
+        is_enabled = payload.is_enabled or payload.is_active
         if payload.is_active:
             cursor.execute("UPDATE llm_configs SET is_active = 0")
         cursor.execute(
             """
             INSERT INTO llm_configs (
-              name, provider_type, base_url, api_key, model_name,
-              system_prompt, temperature, is_active,
+              name, provider_code, provider_type, base_url, api_key, model_name,
+              system_prompt, temperature, is_enabled, is_active,
               last_tested_at, last_test_status, last_test_message, last_test_latency_ms,
               created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
             """,
             (
                 payload.name,
+                payload.provider_code.strip() or "custom_openai",
                 payload.provider_type,
                 payload.base_url.strip(),
                 "",
                 payload.model_name.strip(),
                 payload.system_prompt,
                 payload.temperature,
+                1 if is_enabled else 0,
                 1 if payload.is_active else 0,
                 created_at,
                 created_at,
@@ -457,30 +588,35 @@ def update_llm_config(
         api_key = payload.api_key.strip()
         if api_key == "__KEEP_EXISTING__" or not api_key:
             api_key = get_llm_api_key(config_id, existing["api_key"])
+        is_enabled = payload.is_enabled or payload.is_active
         if payload.is_active:
             cursor.execute("UPDATE llm_configs SET is_active = 0 WHERE id != ?", (config_id,))
         cursor.execute(
             """
             UPDATE llm_configs
             SET name = ?,
+                provider_code = ?,
                 provider_type = ?,
                 base_url = ?,
                 api_key = ?,
                 model_name = ?,
                 system_prompt = ?,
                 temperature = ?,
+                is_enabled = ?,
                 is_active = ?,
                 updated_at = ?
             WHERE id = ?
             """,
             (
                 payload.name,
+                payload.provider_code.strip() or "custom_openai",
                 payload.provider_type,
                 payload.base_url.strip(),
                 "",
                 payload.model_name.strip(),
                 payload.system_prompt,
                 payload.temperature,
+                1 if is_enabled else 0,
                 1 if payload.is_active else 0,
                 updated_at,
                 config_id,
@@ -505,10 +641,39 @@ def activate_llm_config(
             raise HTTPException(status_code=404, detail="llm config not found")
         cursor.execute("UPDATE llm_configs SET is_active = 0")
         cursor.execute(
-            "UPDATE llm_configs SET is_active = 1, updated_at = ? WHERE id = ?",
+            "UPDATE llm_configs SET is_enabled = 1, is_active = 1, updated_at = ? WHERE id = ?",
             (now_iso(), config_id),
         )
     return {"code": 0, "message": "ok", "data": {"id": config_id, "is_active": True}}
+
+
+@router.post("/llm-configs/{config_id}/enable")
+def enable_llm_config(
+    config_id: int,
+    payload: LlmConfigEnablePayload,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    updated_at = now_iso()
+    with db_cursor() as cursor:
+        existing = cursor.execute(
+            "SELECT id, is_active FROM llm_configs WHERE id = ?",
+            (config_id,),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="llm config not found")
+        cursor.execute(
+            """
+            UPDATE llm_configs
+            SET is_enabled = ?, is_active = CASE WHEN ? = 0 THEN 0 ELSE is_active END, updated_at = ?
+            WHERE id = ?
+            """,
+            (1 if payload.is_enabled else 0, 1 if payload.is_enabled else 0, updated_at, config_id),
+        )
+    return {
+        "code": 0,
+        "message": "ok",
+        "data": {"id": config_id, "is_enabled": payload.is_enabled},
+    }
 
 
 @router.post("/llm-configs/{config_id}/test")
@@ -522,6 +687,7 @@ def test_llm_config(
             SELECT
               id,
               name,
+              provider_code,
               provider_type,
               base_url,
               api_key,

@@ -31,6 +31,7 @@ def now_iso() -> str:
 
 class SessionPayload(BaseModel):
     purpose: str
+    llm_config_id: Optional[int] = None
 
 
 class ScoreContextPayload(BaseModel):
@@ -56,11 +57,13 @@ class RewritePayload(BaseModel):
     mode: Optional[str] = None
     prompt: Optional[str] = None
     target_answer_id: Optional[int] = None
+    llm_config_id: Optional[int] = None
     score_context: Optional[ScoreContextPayload] = None
 
 
 class AutoReviewPayload(BaseModel):
     target_answer_id: Optional[int] = None
+    llm_config_id: Optional[int] = None
 
 
 def get_task(task_id: int, expert_user_id: int):
@@ -78,42 +81,51 @@ def get_task(task_id: int, expert_user_id: int):
     return task
 
 
-def ensure_active_llm_config() -> None:
+def get_llm_config(config_id: Optional[int] = None) -> dict:
     with db_cursor() as cursor:
-        config = cursor.execute(
-            """
-            SELECT id, api_key
-            FROM llm_configs
-            WHERE is_active = 1
-            ORDER BY id DESC
-            LIMIT 1
-            """
-        ).fetchone()
+        if config_id is None:
+            config = cursor.execute(
+                """
+                SELECT
+                  id, name, provider_code, provider_type, base_url, api_key,
+                  model_name, system_prompt, temperature, is_enabled, is_active
+                FROM llm_configs
+                WHERE is_active = 1
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        else:
+            config = cursor.execute(
+                """
+                SELECT
+                  id, name, provider_code, provider_type, base_url, api_key,
+                  model_name, system_prompt, temperature, is_enabled, is_active
+                FROM llm_configs
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (config_id,),
+            ).fetchone()
     if not config:
-        raise HTTPException(status_code=400, detail="no active llm config")
-    if not get_llm_api_key(int(config["id"]), config["api_key"]):
-        raise HTTPException(status_code=400, detail="active llm config missing local api key")
-
-
-def get_active_llm_config() -> dict:
-    with db_cursor() as cursor:
-        config = cursor.execute(
-            """
-            SELECT id, name, provider_type, base_url, api_key, model_name, system_prompt, temperature
-            FROM llm_configs
-            WHERE is_active = 1
-            ORDER BY id DESC
-            LIMIT 1
-            """
-        ).fetchone()
-    if not config:
-        raise HTTPException(status_code=400, detail="no active llm config")
+        raise HTTPException(status_code=400, detail="no primary llm config")
+    if not bool(config["is_enabled"]):
+        raise HTTPException(status_code=400, detail="selected llm config is disabled")
     api_key = get_llm_api_key(int(config["id"]), config["api_key"])
     if not api_key:
-        raise HTTPException(status_code=400, detail="active llm config missing local api key")
+        raise HTTPException(status_code=400, detail="selected llm config missing local api key")
     if config["provider_type"] != "openai_compatible":
         raise HTTPException(status_code=400, detail="unsupported provider")
-    return {**dict(config), "resolved_api_key": api_key}
+    return {
+        **dict(config),
+        "is_enabled": bool(config["is_enabled"]),
+        "is_active": bool(config["is_active"]),
+        "resolved_api_key": api_key,
+    }
+
+
+def ensure_active_llm_config() -> None:
+    get_llm_config()
 
 
 def normalize_answer_text(value: str) -> str:
@@ -130,21 +142,26 @@ def create_session(
     payload: SessionPayload,
     current_user: CurrentUser = Depends(require_expert),
 ):
-    ensure_active_llm_config()
+    llm_config = get_llm_config(payload.llm_config_id)
     task = get_task(task_id, current_user["id"])
     created_at = now_iso()
     with db_cursor() as cursor:
         cursor.execute(
             """
             INSERT INTO llm_sessions (
-              task_id, qa_item_id, answer_id, expert_user_id, purpose, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, 'active', ?)
+              task_id, qa_item_id, answer_id, expert_user_id,
+              llm_config_id, llm_config_name, llm_model_name,
+              purpose, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
             """,
             (
                 task["id"],
                 task["qa_item_id"],
                 task["answer_id"],
                 task["expert_user_id"],
+                llm_config["id"],
+                llm_config["name"],
+                llm_config["model_name"],
                 payload.purpose,
                 created_at,
             ),
@@ -153,13 +170,57 @@ def create_session(
     return {"code": 0, "message": "ok", "data": {"session_id": session_id}}
 
 
+@router.get("/{task_id}/llm/configs")
+def list_available_llm_configs(
+    task_id: int,
+    current_user: CurrentUser = Depends(require_expert),
+):
+    get_task(task_id, current_user["id"])
+    with db_cursor() as cursor:
+        rows = cursor.execute(
+            """
+            SELECT
+              id,
+              name,
+              provider_code,
+              model_name,
+              is_enabled,
+              is_active,
+              api_key,
+              last_tested_at,
+              last_test_status
+            FROM llm_configs
+            WHERE is_enabled = 1
+            ORDER BY is_active DESC, id DESC
+            """
+        ).fetchall()
+
+    data = []
+    for row in rows:
+        api_key = get_llm_api_key(int(row["id"]), row["api_key"])
+        data.append(
+            {
+                "id": int(row["id"]),
+                "name": row["name"],
+                "provider_code": row["provider_code"],
+                "model_name": row["model_name"],
+                "is_enabled": bool(row["is_enabled"]),
+                "is_primary": bool(row["is_active"]),
+                "has_api_key": bool(api_key),
+                "last_tested_at": row["last_tested_at"],
+                "last_test_status": row["last_test_status"],
+            }
+        )
+    return {"code": 0, "message": "ok", "data": data}
+
+
 @router.get("/{task_id}/llm/sessions")
 def list_sessions(task_id: int, current_user: CurrentUser = Depends(require_expert)):
     get_task(task_id, current_user["id"])
     with db_cursor() as cursor:
         rows = cursor.execute(
             """
-            SELECT id, purpose, status, created_at
+            SELECT id, purpose, status, created_at, llm_config_id, llm_config_name, llm_model_name
             FROM llm_sessions
             WHERE task_id = ?
             ORDER BY id DESC
@@ -208,7 +269,7 @@ def create_message(
     with db_cursor() as cursor:
         session = cursor.execute(
             """
-            SELECT id, purpose
+            SELECT id, purpose, llm_config_id
             FROM llm_sessions
             WHERE id = ? AND task_id = ?
             """,
@@ -276,13 +337,12 @@ def stream_message(
     current_user: CurrentUser = Depends(require_expert),
 ):
     task = get_task(task_id, current_user["id"])
-    llm_config = get_active_llm_config()
     created_at = now_iso()
 
     with db_cursor() as cursor:
         session = cursor.execute(
             """
-            SELECT id, purpose
+            SELECT id, purpose, llm_config_id
             FROM llm_sessions
             WHERE id = ? AND task_id = ?
             """,
@@ -353,6 +413,8 @@ def stream_message(
             """,
             (session_id,),
         ).fetchall()
+
+    llm_config = get_llm_config(session["llm_config_id"])
 
     request_messages = build_task_messages(
         action=session["purpose"],
@@ -505,7 +567,7 @@ def auto_review(
     current_user: CurrentUser = Depends(require_expert),
 ):
     task = get_task(task_id, current_user["id"])
-    llm_config = get_active_llm_config()
+    llm_config = get_llm_config(payload.llm_config_id)
     created_at = now_iso()
 
     with db_cursor() as cursor:
@@ -542,14 +604,19 @@ def auto_review(
         cursor.execute(
             """
             INSERT INTO llm_sessions (
-              task_id, qa_item_id, answer_id, expert_user_id, purpose, status, created_at
-            ) VALUES (?, ?, ?, ?, 'rewrite', 'active', ?)
+              task_id, qa_item_id, answer_id, expert_user_id,
+              llm_config_id, llm_config_name, llm_model_name,
+              purpose, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'rewrite', 'active', ?)
             """,
             (
                 task["id"],
                 task["qa_item_id"],
                 task["answer_id"],
                 task["expert_user_id"],
+                llm_config["id"],
+                llm_config["name"],
+                llm_config["model_name"],
                 created_at,
             ),
         )
@@ -681,7 +748,7 @@ def quick_rewrite(
     payload: RewritePayload,
     current_user: CurrentUser = Depends(require_expert),
 ):
-    ensure_active_llm_config()
+    llm_config = get_llm_config(payload.llm_config_id)
     task = get_task(task_id, current_user["id"])
     created_at = now_iso()
     with db_cursor() as cursor:
@@ -699,14 +766,19 @@ def quick_rewrite(
         cursor.execute(
             """
             INSERT INTO llm_sessions (
-              task_id, qa_item_id, answer_id, expert_user_id, purpose, status, created_at
-            ) VALUES (?, ?, ?, ?, 'rewrite', 'active', ?)
+              task_id, qa_item_id, answer_id, expert_user_id,
+              llm_config_id, llm_config_name, llm_model_name,
+              purpose, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'rewrite', 'active', ?)
             """,
             (
                 task["id"],
                 task["qa_item_id"],
                 target_answer_id,
                 task["expert_user_id"],
+                llm_config["id"],
+                llm_config["name"],
+                llm_config["model_name"],
                 created_at,
             ),
         )

@@ -863,21 +863,46 @@ def handle_llm(
             """,
             (session_id,),
         ).fetchall()
-
-        llm_config = cursor.execute(
+        session = cursor.execute(
             """
-            SELECT id, name, provider_type, base_url, api_key, model_name, system_prompt, temperature
-            FROM llm_configs
-            WHERE is_active = 1
-            ORDER BY id DESC
-            LIMIT 1
-            """
+            SELECT llm_config_id
+            FROM llm_sessions
+            WHERE id = ?
+            """,
+            (session_id,),
         ).fetchone()
+
+        if session and session["llm_config_id"] is not None:
+            llm_config = cursor.execute(
+                """
+                SELECT
+                  id, name, provider_type, base_url, api_key, model_name,
+                  system_prompt, temperature, is_enabled
+                FROM llm_configs
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (int(session["llm_config_id"]),),
+            ).fetchone()
+        else:
+            llm_config = cursor.execute(
+                """
+                SELECT
+                  id, name, provider_type, base_url, api_key, model_name,
+                  system_prompt, temperature, is_enabled
+                FROM llm_configs
+                WHERE is_active = 1
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
         if not llm_config:
             raise LlmClientError("no active llm config")
+        if not bool(llm_config["is_enabled"]):
+            raise LlmClientError("selected llm config is disabled")
         api_key = get_llm_api_key(int(llm_config["id"]), llm_config["api_key"])
         if not api_key:
-            raise LlmClientError("active llm config missing api key in local secrets")
+            raise LlmClientError("selected llm config missing api key in local secrets")
 
         messages = build_task_messages(
             action=action,

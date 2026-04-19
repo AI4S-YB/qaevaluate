@@ -1,36 +1,124 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { apiFetch, type LlmConfigItem } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
+type ProviderPreset = {
+  code: string;
+  label: string;
+  baseUrl: string;
+  defaultModel: string;
+  description: string;
+};
+
+const providerPresets: ProviderPreset[] = [
+  {
+    code: "qwen_dashscope",
+    label: "阿里百炼 / Qwen",
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    defaultModel: "qwen-plus",
+    description: "官方 OpenAI 兼容接口，适合直接接入通义千问。"
+  },
+  {
+    code: "zhipu_glm",
+    label: "智谱 / GLM",
+    baseUrl: "https://open.bigmodel.cn/api/paas/v4/",
+    defaultModel: "glm-4-plus",
+    description: "官方 OpenAI 兼容接口，适合直接接入 GLM 系列。"
+  },
+  {
+    code: "deepseek",
+    label: "DeepSeek",
+    baseUrl: "https://api.deepseek.com",
+    defaultModel: "deepseek-chat",
+    description: "DeepSeek 官方兼容接口，适合低成本高质量评测。"
+  },
+  {
+    code: "moonshot_kimi",
+    label: "月之暗面 / Kimi",
+    baseUrl: "https://api.moonshot.cn/v1",
+    defaultModel: "moonshot-v1-8k",
+    description: "Kimi 官方接口，适合长文本类辅助评测。"
+  },
+  {
+    code: "siliconflow",
+    label: "硅基流动",
+    baseUrl: "https://api.siliconflow.cn/v1",
+    defaultModel: "Qwen/Qwen2.5-72B-Instruct",
+    description: "统一托管多个国产模型，适合快速试验不同模型。"
+  },
+  {
+    code: "openai_proxy",
+    label: "GPT 代理",
+    baseUrl: "https://your-proxy.example.com/v1",
+    defaultModel: "gpt-4.1",
+    description: "适合通过 API 代理接入 GPT 系列。"
+  },
+  {
+    code: "claude_proxy",
+    label: "Claude 代理",
+    baseUrl: "https://your-proxy.example.com/v1",
+    defaultModel: "claude-sonnet-4-20250514",
+    description: "适合通过 OpenAI 兼容代理接入 Claude。"
+  },
+  {
+    code: "gemini_openai",
+    label: "Gemini OpenAI 兼容",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
+    defaultModel: "gemini-2.5-pro",
+    description: "Google Gemini 官方 OpenAI compatibility。"
+  },
+  {
+    code: "custom_openai",
+    label: "自定义 OpenAI 兼容",
+    baseUrl: "",
+    defaultModel: "",
+    description: "适合自建网关、统一代理或其它兼容平台。"
+  }
+];
+
 type FormState = {
   id: number | null;
   name: string;
+  provider_code: string;
   provider_type: "openai_compatible";
   base_url: string;
   api_key: string;
   model_name: string;
   system_prompt: string;
   temperature: string;
+  is_enabled: boolean;
+  is_active: boolean;
 };
 
 const initialForm: FormState = {
   id: null,
   name: "",
+  provider_code: "qwen_dashscope",
   provider_type: "openai_compatible",
-  base_url: "",
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
   api_key: "",
-  model_name: "",
+  model_name: "qwen-plus",
   system_prompt: "",
-  temperature: "0.2"
+  temperature: "0.2",
+  is_enabled: true,
+  is_active: false
 };
 
 function formatTime(value: string) {
   return value.replace("T", " ").slice(0, 16);
+}
+
+function getProviderPreset(code: string) {
+  return providerPresets.find((item) => item.code === code) ?? providerPresets.at(-1)!;
+}
+
+function getProviderLabel(code: string) {
+  return getProviderPreset(code).label;
 }
 
 export default function AdminLlmConfigsPage() {
@@ -40,6 +128,7 @@ export default function AdminLlmConfigsPage() {
   const [saving, setSaving] = useState(false);
   const [testingId, setTestingId] = useState<number | null>(null);
   const [activatingId, setActivatingId] = useState<number | null>(null);
+  const [togglingId, setTogglingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -62,6 +151,7 @@ export default function AdminLlmConfigsPage() {
 
   function beginCreate() {
     setForm(initialForm);
+    setNotice(null);
     setError(null);
   }
 
@@ -69,15 +159,28 @@ export default function AdminLlmConfigsPage() {
     setForm({
       id: config.id,
       name: config.name,
+      provider_code: config.provider_code,
       provider_type: config.provider_type,
       base_url: config.base_url,
       api_key: "",
       model_name: config.model_name,
       system_prompt: config.system_prompt ?? "",
-      temperature: String(config.temperature)
+      temperature: String(config.temperature),
+      is_enabled: config.is_enabled,
+      is_active: config.is_active
     });
     setNotice(null);
     setError(null);
+  }
+
+  function handlePresetChange(nextCode: string) {
+    const preset = getProviderPreset(nextCode);
+    setForm((current) => ({
+      ...current,
+      provider_code: preset.code,
+      base_url: preset.baseUrl || current.base_url,
+      model_name: current.model_name || preset.defaultModel
+    }));
   }
 
   async function handleSave() {
@@ -88,12 +191,15 @@ export default function AdminLlmConfigsPage() {
     try {
       const payload = {
         name: form.name.trim(),
+        provider_code: form.provider_code,
         provider_type: form.provider_type,
         base_url: form.base_url.trim(),
         api_key: form.api_key.trim(),
         model_name: form.model_name.trim(),
         system_prompt: form.system_prompt.trim() || null,
-        temperature: Number(form.temperature)
+        temperature: Number(form.temperature),
+        is_enabled: form.is_enabled || form.is_active,
+        is_active: form.is_active
       };
 
       if (!payload.name || !payload.base_url || !payload.model_name) {
@@ -164,21 +270,44 @@ export default function AdminLlmConfigsPage() {
     try {
       await apiFetch(`/api/admin/llm-configs/${configId}/activate`, { method: "POST" });
       await loadConfigs();
-      setNotice("当前生效模型已切换。");
+      setNotice("主模型已切换。");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "切换当前模型失败");
+      setError(err instanceof Error ? err.message : "切换主模型失败");
     } finally {
       setActivatingId(null);
     }
   }
 
+  async function handleToggleEnabled(config: LlmConfigItem) {
+    setTogglingId(config.id);
+    setError(null);
+    setNotice(null);
+    try {
+      await apiFetch(`/api/admin/llm-configs/${config.id}/enable`, {
+        method: "POST",
+        body: JSON.stringify({ is_enabled: !config.is_enabled })
+      });
+      await loadConfigs();
+      setNotice(config.is_enabled ? "模型已停用。" : "模型已启用。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "切换启用状态失败");
+    } finally {
+      setTogglingId(null);
+    }
+  }
+
   const activeConfig = configs.find((item) => item.is_active) ?? null;
+  const enabledCount = useMemo(
+    () => configs.filter((item) => item.is_enabled).length,
+    [configs]
+  );
+  const selectedPreset = getProviderPreset(form.provider_code);
 
   return (
     <div className="space-y-6">
       <div>
         <p className="text-sm text-muted-foreground">模型配置</p>
-        <h2 className="mt-2 font-serif text-4xl">让专家端 LLM 辅助直接走后台统一配置的 API</h2>
+        <h2 className="mt-2 font-serif text-4xl">平台预设、多启用模型、单主模型</h2>
       </div>
 
       <section className="grid gap-4 xl:grid-cols-[0.96fr_1.04fr]">
@@ -199,20 +328,39 @@ export default function AdminLlmConfigsPage() {
             ) : null}
 
             <div className="rounded-[28px] border border-border bg-stone-50 p-5 text-sm leading-7 text-muted-foreground">
-              当前 MVP 先支持 `OpenAI 兼容接口`。也就是只要你的模型服务支持
-              `POST /chat/completions`，就可以接入专家端的事实核查、风险分析和标准答案改写。
+              当前仍统一走 `OpenAI 兼容接口`，但内置了千问、GLM、DeepSeek、Kimi、Gemini 等平台预设。
+              也就是说，大多数情况下只需要选平台、填 API Key、确认模型名即可。
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-[1fr_1fr]">
+              <select
+                className="field"
+                value={form.provider_code}
+                onChange={(event) => handlePresetChange(event.target.value)}
+              >
+                {providerPresets.map((preset) => (
+                  <option key={preset.code} value={preset.code}>
+                    {preset.label}
+                  </option>
+                ))}
+              </select>
+              <input className="field" value="openai_compatible" readOnly />
+            </div>
+
+            <div className="rounded-[24px] border border-border bg-white p-4 text-sm leading-7 text-muted-foreground">
+              <p className="font-medium text-foreground">{selectedPreset.label}</p>
+              <p className="mt-2">{selectedPreset.description}</p>
             </div>
 
             <input
               className="field"
-              placeholder="配置名称，例如 GPT-4.1 评测"
+              placeholder="配置名称，例如 千问主评测模型"
               value={form.name}
               onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
             />
-            <input className="field" value="openai_compatible" readOnly />
             <input
               className="field"
-              placeholder="Base URL，例如 https://api.openai.com/v1"
+              placeholder="Base URL"
               value={form.base_url}
               onChange={(event) =>
                 setForm((current) => ({ ...current, base_url: event.target.value }))
@@ -230,7 +378,7 @@ export default function AdminLlmConfigsPage() {
             <div className="grid gap-4 md:grid-cols-2">
               <input
                 className="field"
-                placeholder="模型名，例如 gpt-4.1"
+                placeholder="模型名"
                 value={form.model_name}
                 onChange={(event) =>
                   setForm((current) => ({ ...current, model_name: event.target.value }))
@@ -254,6 +402,33 @@ export default function AdminLlmConfigsPage() {
               }
             />
 
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="flex items-center gap-3 rounded-[20px] border border-border bg-white px-4 py-3 text-sm">
+                <input
+                  type="checkbox"
+                  checked={form.is_enabled}
+                  onChange={(event) =>
+                    setForm((current) => ({ ...current, is_enabled: event.target.checked }))
+                  }
+                />
+                <span>启用为可选模型</span>
+              </label>
+              <label className="flex items-center gap-3 rounded-[20px] border border-border bg-white px-4 py-3 text-sm">
+                <input
+                  type="checkbox"
+                  checked={form.is_active}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      is_active: event.target.checked,
+                      is_enabled: event.target.checked ? true : current.is_enabled
+                    }))
+                  }
+                />
+                <span>设为主模型</span>
+              </label>
+            </div>
+
             <div className="flex justify-between gap-3">
               <Button variant="secondary" onClick={() => beginCreate()}>
                 新建一条
@@ -270,8 +445,10 @@ export default function AdminLlmConfigsPage() {
             <div>
               <CardTitle>已有配置</CardTitle>
               <p className="mt-2 text-sm text-muted-foreground">
-                当前生效模型：{activeConfig ? `${activeConfig.name} / ${activeConfig.model_name}` : "未设置"}
+                当前主模型：
+                {activeConfig ? ` ${activeConfig.name} / ${activeConfig.model_name}` : " 未设置"}
               </p>
+              <p className="mt-1 text-sm text-muted-foreground">当前已启用模型数：{enabledCount}</p>
             </div>
             <Button variant="secondary" onClick={() => void loadConfigs()}>
               刷新列表
@@ -285,17 +462,15 @@ export default function AdminLlmConfigsPage() {
             ) : null}
 
             {configs.map((config) => (
-              <div
-                key={config.id}
-                className="rounded-[28px] border border-border bg-stone-50 p-4"
-              >
+              <div key={config.id} className="rounded-[28px] border border-border bg-stone-50 p-4">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                   <div className="space-y-2">
                     <div className="flex flex-wrap gap-2">
-                      <Badge variant={config.is_active ? "success" : "muted"}>
-                        {config.is_active ? "生效中" : "未生效"}
+                      {config.is_active ? <Badge variant="success">主模型</Badge> : null}
+                      <Badge variant={config.is_enabled ? "default" : "muted"}>
+                        {config.is_enabled ? "已启用" : "已停用"}
                       </Badge>
-                      <Badge variant="warning">{config.provider_type}</Badge>
+                      <Badge variant="warning">{getProviderLabel(config.provider_code)}</Badge>
                       <Badge variant="muted">{config.model_name}</Badge>
                     </div>
                     <p className="font-medium">{config.name}</p>
@@ -338,14 +513,26 @@ export default function AdminLlmConfigsPage() {
                     </Button>
                     <Button
                       size="sm"
+                      variant="secondary"
+                      disabled={togglingId === config.id}
+                      onClick={() => void handleToggleEnabled(config)}
+                    >
+                      {togglingId === config.id
+                        ? "处理中…"
+                        : config.is_enabled
+                          ? "停用"
+                          : "启用"}
+                    </Button>
+                    <Button
+                      size="sm"
                       disabled={config.is_active || activatingId === config.id}
                       onClick={() => void handleActivate(config.id)}
                     >
                       {config.is_active
-                        ? "当前模型"
+                        ? "当前主模型"
                         : activatingId === config.id
                           ? "切换中…"
-                          : "设为当前模型"}
+                          : "设为主模型"}
                     </Button>
                   </div>
                 </div>

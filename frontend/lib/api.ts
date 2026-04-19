@@ -137,6 +137,9 @@ export type TaskDetail = {
     purpose: string;
     status: string;
     created_at: string;
+    llm_config_id: number | null;
+    llm_config_name: string | null;
+    llm_model_name: string | null;
   }>;
   draft: unknown;
   submitted_record: TaskDraft | null;
@@ -316,6 +319,9 @@ export type LlmSession = {
   purpose: string;
   status: string;
   created_at: string;
+  llm_config_id: number | null;
+  llm_config_name: string | null;
+  llm_model_name: string | null;
 };
 
 export type LlmMessage = {
@@ -450,11 +456,13 @@ export type TaxonomyItem = {
 export type LlmConfigItem = {
   id: number;
   name: string;
+  provider_code: string;
   provider_type: "openai_compatible";
   base_url: string;
   model_name: string;
   system_prompt: string | null;
   temperature: number;
+  is_enabled: boolean;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -464,4 +472,64 @@ export type LlmConfigItem = {
   last_test_status: "passed" | "failed" | null;
   last_test_message: string | null;
   last_test_latency_ms: number | null;
+};
+
+export type ExpertLlmConfigOption = {
+  id: number;
+  name: string;
+  provider_code: string;
+  model_name: string;
+  is_enabled: boolean;
+  is_primary: boolean;
+  has_api_key: boolean;
+  last_tested_at: string | null;
+  last_test_status: "passed" | "failed" | null;
+};
+
+export type AdminSystemStatus = {
+  environment: {
+    app_env: string;
+    database: {
+      path: string;
+      exists: boolean;
+      size_bytes: number;
+    };
+    runtime: {
+      path: string;
+      uploads_count: number;
+      exports_count: number;
+    };
+  };
+  llm: {
+    total_configs: number;
+    active_config: LlmConfigItem | null;
+    passed_count: number;
+    failed_count: number;
+    missing_api_key_count: number;
+    configs: LlmConfigItem[];
+  };
+  queue: {
+    summary: {
+      pending: number;
+      processing: number;
+      done: number;
+      failed: number;
+    };
+    recent_failed_jobs: QueueJob[];
+    recent_pending_jobs: QueueJob[];
+  };
+  backups: {
+    directory: string;
+    total_files: number;
+    latest_file: {
+      name: string;
+      size_bytes: number;
+      updated_at: string;
+    } | null;
+    files: Array<{
+      name: string;
+      size_bytes: number;
+      updated_at: string;
+    }>;
+  };
 };

@@ -432,7 +432,14 @@ def get_task_detail(
         ).fetchall()
         sessions = cursor.execute(
             """
-            SELECT id, purpose, status, created_at
+            SELECT
+              id,
+              purpose,
+              status,
+              created_at,
+              llm_config_id,
+              llm_config_name,
+              llm_model_name
             FROM llm_sessions
             WHERE task_id = ?
             ORDER BY id DESC

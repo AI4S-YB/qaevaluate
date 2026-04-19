@@ -3,6 +3,7 @@ import { AppShell, type NavItem } from "@/components/app-shell";
 
 const navItems: NavItem[] = [
   { href: "/admin", label: "仪表盘", hint: "查看整体进度和关键指标" },
+  { href: "/admin/system-status", label: "系统状态", hint: "查看模型、队列和备份运行情况" },
   { href: "/admin/experts", label: "专家审核", hint: "审核注册、停用或查看详情" },
   { href: "/admin/applications", label: "应用管理", hint: "维护领域和启用状态" },
   { href: "/admin/taxonomy", label: "分类配置", hint: "维护 QA 类型与领域场景" },

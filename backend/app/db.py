@@ -71,12 +71,14 @@ def apply_legacy_migrations(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS llm_configs (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           name TEXT NOT NULL UNIQUE,
+          provider_code TEXT NOT NULL DEFAULT 'custom_openai',
           provider_type TEXT NOT NULL CHECK(provider_type IN ('openai_compatible')),
           base_url TEXT NOT NULL,
           api_key TEXT NOT NULL,
           model_name TEXT NOT NULL,
           system_prompt TEXT,
           temperature REAL NOT NULL DEFAULT 0.2,
+          is_enabled INTEGER NOT NULL DEFAULT 1,
           is_active INTEGER NOT NULL DEFAULT 0,
           last_tested_at TEXT,
           last_test_status TEXT CHECK(last_test_status IN ('passed', 'failed')),
@@ -131,6 +133,18 @@ def apply_legacy_migrations(conn: sqlite3.Connection) -> None:
     ensure_column(
         conn,
         "llm_configs",
+        "provider_code TEXT NOT NULL DEFAULT 'custom_openai'",
+        "provider_code",
+    )
+    ensure_column(
+        conn,
+        "llm_configs",
+        "is_enabled INTEGER NOT NULL DEFAULT 1",
+        "is_enabled",
+    )
+    ensure_column(
+        conn,
+        "llm_configs",
         "last_test_status TEXT CHECK(last_test_status IN ('passed', 'failed'))",
         "last_test_status",
     )
@@ -163,6 +177,9 @@ def apply_legacy_migrations(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "llm_messages", "target_answer_id INTEGER", "target_answer_id")
     ensure_column(conn, "llm_messages", "generated_answer_id INTEGER", "generated_answer_id")
     ensure_column(conn, "llm_messages", "review_json TEXT", "review_json")
+    ensure_column(conn, "llm_sessions", "llm_config_id INTEGER", "llm_config_id")
+    ensure_column(conn, "llm_sessions", "llm_config_name TEXT", "llm_config_name")
+    ensure_column(conn, "llm_sessions", "llm_model_name TEXT", "llm_model_name")
     conn.commit()
 
 
