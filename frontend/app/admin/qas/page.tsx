@@ -173,7 +173,7 @@ export default function AdminQasPage() {
             value={technicalTypeFilter}
             onChange={(event) => setTechnicalTypeFilter(event.target.value)}
           >
-            <option value="all">全部技术类型</option>
+            <option value="all">全部 QA 类型</option>
             {technicalTypes.map((item) => (
               <option key={item.id} value={item.code}>
                 {item.name}
@@ -185,7 +185,7 @@ export default function AdminQasPage() {
             value={businessTagFilter}
             onChange={(event) => setBusinessTagFilter(event.target.value)}
           >
-            <option value="all">全部业务标签</option>
+            <option value="all">全部领域场景</option>
             {businessTags.map((item) => (
               <option key={item.id} value={item.code}>
                 {item.name}

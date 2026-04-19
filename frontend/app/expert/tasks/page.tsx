@@ -44,6 +44,11 @@ function compactTags(tagsJson: string | null) {
   };
 }
 
+type ExpertTaxonomy = {
+  technical_types: TaxonomyItem[];
+  business_tags: TaxonomyItem[];
+};
+
 export default function ExpertTasksPage() {
   const [tasks, setTasks] = useState<ExpertTaskListItem[]>([]);
   const [technicalTypes, setTechnicalTypes] = useState<TaxonomyItem[]>([]);
@@ -70,12 +75,9 @@ export default function ExpertTasksPage() {
 
   async function loadTaxonomy() {
     try {
-      const [technicalTypeData, businessTagData] = await Promise.all([
-        apiFetch<TaxonomyItem[]>("/api/admin/technical-types"),
-        apiFetch<TaxonomyItem[]>("/api/admin/business-tags")
-      ]);
-      setTechnicalTypes(technicalTypeData.filter((item) => item.is_active));
-      setBusinessTags(businessTagData.filter((item) => item.is_active));
+      const data = await apiFetch<ExpertTaxonomy>("/api/expert/taxonomy");
+      setTechnicalTypes(data.technical_types);
+      setBusinessTags(data.business_tags);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载分类配置失败");
     }
@@ -141,12 +143,12 @@ export default function ExpertTasksPage() {
       <div className="flex flex-col gap-4">
         <div>
           <p className="text-sm text-muted-foreground">任务列表</p>
-          <h2 className="mt-2 font-serif text-4xl">先选业务类型和技术类型，再批量处理任务</h2>
+          <h2 className="mt-2 font-serif text-4xl">先选领域场景和 QA 类型，再批量处理任务</h2>
         </div>
         <div className="grid gap-3 lg:grid-cols-[1fr_180px_180px_160px_120px]">
           <input
             className="field"
-            placeholder="搜索问题、应用或状态"
+            placeholder="搜索问题、项目或状态"
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
           />
@@ -155,7 +157,7 @@ export default function ExpertTasksPage() {
             value={technicalTypeFilter}
             onChange={(event) => setTechnicalTypeFilter(event.target.value)}
           >
-            <option value="all">全部技术类型</option>
+            <option value="all">全部 QA 类型</option>
             {technicalTypes.map((item) => (
               <option key={item.id} value={item.code}>
                 {item.name}
@@ -167,7 +169,7 @@ export default function ExpertTasksPage() {
             value={businessTagFilter}
             onChange={(event) => setBusinessTagFilter(event.target.value)}
           >
-            <option value="all">全部业务类型</option>
+            <option value="all">全部领域场景</option>
             {businessTags.map((item) => (
               <option key={item.id} value={item.code}>
                 {item.name}
@@ -194,9 +196,9 @@ export default function ExpertTasksPage() {
         <div className="flex flex-wrap gap-2 text-sm text-muted-foreground">
           <span>当前 {filteredTasks.length} 条任务</span>
           <span>·</span>
-          <span>业务类型: {businessTagFilter === "all" ? "全部" : businessTagFilter}</span>
+          <span>领域场景: {businessTagFilter === "all" ? "全部" : businessTagFilter}</span>
           <span>·</span>
-          <span>技术类型: {technicalTypeFilter === "all" ? "全部" : technicalTypeFilter}</span>
+          <span>QA 类型: {technicalTypeFilter === "all" ? "全部" : technicalTypeFilter}</span>
           <span>·</span>
           <span>
             状态:

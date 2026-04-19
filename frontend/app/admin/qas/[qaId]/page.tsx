@@ -180,7 +180,7 @@ export default function AdminQaDetailPage() {
           </CardHeader>
           <CardContent className="space-y-4 text-sm leading-7 text-muted-foreground">
             <p>应用：{detail.qa_item.application_name}</p>
-            <p>技术类型：{detail.qa_item.technical_type_name || "未定义"}</p>
+            <p>QA 类型：{detail.qa_item.technical_type_name || "未定义"}</p>
             <p>问题：{detail.qa_item.question_text}</p>
             <p>来源：{detail.qa_item.source || "未记录"}</p>
             <div className="flex flex-wrap gap-2">

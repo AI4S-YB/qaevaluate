@@ -4,11 +4,16 @@ __pycache__/
 *.pyc
 node_modules/
 .next/
+.next-dev/
+.next-prod/
 dist/
 coverage/
 backend/.venv/
 backend/data/*.db
+backend/data/llm_config_secrets.json
 frontend/.next/
+frontend/.next-dev/
+frontend/.next-prod/
 frontend/node_modules/
 data/uploads/*
 data/exports/*

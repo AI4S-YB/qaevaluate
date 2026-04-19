@@ -114,11 +114,32 @@ export default function ExpertDashboardPage() {
             {profile ? `${profile.full_name} 的评测首页` : "今日评测焦点"}
           </h2>
           {profile ? (
-            <p className="mt-3 max-w-3xl text-sm leading-7 text-muted-foreground">
-              当前覆盖应用：
-              {profile.applications.map((item) => item.name).join(" / ") || "未配置"}
-              {profile.organization ? ` / ${profile.organization}` : ""}
-            </p>
+            <div className="mt-4 space-y-3">
+              <div className="flex flex-wrap gap-2">
+                {profile.applications.length ? (
+                  profile.applications.map((item) => (
+                    <Badge key={item.id} variant="muted">
+                      项目: {item.name}
+                    </Badge>
+                  ))
+                ) : (
+                  <Badge variant="muted">项目: 未配置</Badge>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {profile.business_tags.length ? (
+                  profile.business_tags.map((item) => (
+                    <Badge key={item.id} variant="warning">
+                      领域场景: {item.name}
+                    </Badge>
+                  ))
+                ) : (
+                  <Badge variant="warning">领域场景: 未配置</Badge>
+                )}
+                <Badge variant="default">当前任务: {tasks.length}</Badge>
+                {profile.organization ? <Badge variant="muted">{profile.organization}</Badge> : null}
+              </div>
+            </div>
           ) : null}
         </div>
         <div className="flex gap-3">

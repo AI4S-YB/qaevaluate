@@ -1,11 +1,12 @@
 import { AuthGuard } from "@/components/auth-guard";
 import { AppShell, type NavItem } from "@/components/app-shell";
+import { ExpertPreviewBanner } from "@/components/expert-preview-banner";
 
 const navItems: NavItem[] = [
   { href: "/expert", label: "工作台", hint: "任务概览与快捷入口" },
   { href: "/expert/tasks", label: "任务列表", hint: "查看待评与争议复核任务" },
   { href: "/expert/history", label: "我的历史", hint: "查看已提交的评测记录" },
-  { href: "/expert/profile", label: "我的资料", hint: "更新擅长应用和简介" }
+  { href: "/expert/profile", label: "我的资料", hint: "维护领域场景和个人简介" }
 ];
 
 export default function ExpertLayout({
@@ -19,6 +20,7 @@ export default function ExpertLayout({
         navItems={navItems}
         roleLabel="Expert Workspace"
       >
+        <ExpertPreviewBanner />
         {children}
       </AppShell>
     </AuthGuard>

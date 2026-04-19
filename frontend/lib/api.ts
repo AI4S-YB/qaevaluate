@@ -7,21 +7,26 @@ type ApiEnvelope<T> = {
   data: T;
 };
 
+export function getStoredAuthToken(): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const token = window.localStorage.getItem("qaevaluate.auth");
+  if (!token) {
+    return null;
+  }
+  try {
+    return (JSON.parse(token) as { token?: string }).token ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function apiFetch<T>(
   path: string,
   init?: RequestInit
 ): Promise<T> {
-  let parsedToken: string | null = null;
-  if (typeof window !== "undefined") {
-    const token = window.localStorage.getItem("qaevaluate.auth");
-    if (token) {
-      try {
-        parsedToken = (JSON.parse(token) as { token?: string }).token ?? null;
-      } catch {
-        parsedToken = null;
-      }
-    }
-  }
+  const parsedToken = getStoredAuthToken();
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
     headers: {
@@ -123,6 +128,7 @@ export type TaskDetail = {
     answer_text: string;
     answer_type: string;
     source_model: string | null;
+    parent_answer_id: number | null;
     version_no: number;
     created_at: string;
   }>;
@@ -149,6 +155,7 @@ export type TaskDraft = {
     overall_decision?: string | null;
     quick_comment_codes?: string[];
     adopted_rewrite_answer_id?: number | null;
+    adopted_rewrite_answer_text?: string | null;
   };
   updated_at: string;
 };
@@ -161,7 +168,15 @@ export type ExpertUser = {
   title: string | null;
   status: "pending" | "approved" | "rejected" | "disabled";
   created_at: string;
-  applications: string;
+  allow_cross_business_review: boolean;
+  applications: Array<{
+    id: number;
+    name: string;
+  }>;
+  business_tags: Array<{
+    id: number;
+    name: string;
+  }>;
 };
 
 export type ImportBatch = {
@@ -170,6 +185,11 @@ export type ImportBatch = {
   source: string | null;
   file_path: string | null;
   import_status: "uploaded" | "parsed" | "failed";
+  application_id: number | null;
+  application_name: string | null;
+  business_tags_json: string | null;
+  technical_type_code: string | null;
+  technical_type_name: string | null;
   total_count: number;
   success_count: number;
   fail_count: number;
@@ -191,6 +211,11 @@ export type ImportFailureDetail = {
     id: number;
     name: string;
     import_status: "uploaded" | "parsed" | "failed";
+    application_id: number | null;
+    application_name: string | null;
+    business_tags_json: string | null;
+    technical_type_code: string | null;
+    technical_type_name: string | null;
     total_count: number;
     success_count: number;
     fail_count: number;
@@ -297,6 +322,9 @@ export type LlmMessage = {
   id: number;
   role: "system" | "user" | "assistant";
   content: string;
+  target_answer_id: number | null;
+  generated_answer_id: number | null;
+  review_json: string | null;
   created_at: string;
 };
 
@@ -314,6 +342,11 @@ export type MeProfile = {
     id: number;
     name: string;
   }>;
+  business_tags: Array<{
+    id: number;
+    name: string;
+  }>;
+  allow_cross_business_review: boolean;
 };
 
 export type AdminDashboard = {
@@ -412,4 +445,23 @@ export type TaxonomyItem = {
   is_active: boolean;
   sort_order: number;
   created_at: string;
+};
+
+export type LlmConfigItem = {
+  id: number;
+  name: string;
+  provider_type: "openai_compatible";
+  base_url: string;
+  model_name: string;
+  system_prompt: string | null;
+  temperature: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  api_key_masked: string;
+  has_api_key: boolean;
+  last_tested_at: string | null;
+  last_test_status: "passed" | "failed" | null;
+  last_test_message: string | null;
+  last_test_latency_ms: number | null;
 };

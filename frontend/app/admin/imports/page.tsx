@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   apiFetch,
+  type AdminApplicationItem,
   type ImportBatch,
   type ImportFailure,
   type ImportFailureDetail,
@@ -21,23 +22,39 @@ function formatTime(value: string) {
   return value.replace("T", " ").slice(0, 16);
 }
 
+function parseBusinessTags(value: string | null) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as string[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 function classifyImportError(message: string) {
   if (message.includes("technical_type not found")) {
     return {
-      label: "技术类型不存在",
-      hint: "导入记录中的 technical_type 未在后台配置中启用。"
+      label: "QA 类型不存在",
+      hint: "当前批次绑定的 QA 类型未在后台配置中启用。"
     };
   }
   if (message.includes("business_tag not found")) {
     return {
-      label: "业务标签不存在",
-      hint: "导入记录中的 business_tags 包含未定义或未启用标签。"
+      label: "领域场景不存在",
+      hint: "当前批次绑定的领域场景包含未定义或未启用的配置。"
     };
   }
   if (message.includes("business_tags must be an array")) {
     return {
-      label: "业务标签格式错误",
-      hint: "business_tags 必须是字符串数组。"
+      label: "领域场景格式错误",
+      hint: "上传批次时绑定的领域场景参数格式不正确。"
+    };
+  }
+  if (message.includes("application not found")) {
+    return {
+      label: "项目不存在",
+      hint: "当前批次绑定的项目未在后台配置中启用。"
     };
   }
   if (message.includes("missing answer")) {
@@ -54,6 +71,7 @@ function classifyImportError(message: string) {
 
 export default function AdminImportsPage() {
   const [batches, setBatches] = useState<ImportBatch[]>([]);
+  const [applications, setApplications] = useState<AdminApplicationItem[]>([]);
   const [technicalTypes, setTechnicalTypes] = useState<TaxonomyItem[]>([]);
   const [businessTags, setBusinessTags] = useState<TaxonomyItem[]>([]);
   const [failureDetail, setFailureDetail] = useState<ImportFailureDetail | null>(null);
@@ -64,6 +82,9 @@ export default function AdminImportsPage() {
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [source, setSource] = useState("");
+  const [applicationId, setApplicationId] = useState("");
+  const [technicalTypeCode, setTechnicalTypeCode] = useState("");
+  const [selectedBusinessTags, setSelectedBusinessTags] = useState<string[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [parsingId, setParsingId] = useState<number | null>(null);
@@ -88,10 +109,12 @@ export default function AdminImportsPage() {
 
   async function loadTaxonomy() {
     try {
-      const [technicalTypeData, businessTagData] = await Promise.all([
+      const [applicationData, technicalTypeData, businessTagData] = await Promise.all([
+        apiFetch<AdminApplicationItem[]>("/api/admin/applications"),
         apiFetch<TaxonomyItem[]>("/api/admin/technical-types"),
         apiFetch<TaxonomyItem[]>("/api/admin/business-tags")
       ]);
+      setApplications(applicationData.filter((item) => Boolean(item.is_active)));
       setTechnicalTypes(technicalTypeData.filter((item) => item.is_active));
       setBusinessTags(businessTagData.filter((item) => item.is_active));
     } catch (err) {
@@ -119,22 +142,34 @@ export default function AdminImportsPage() {
       setError("请先选择一个 JSON 文件");
       return;
     }
+    if (!technicalTypeCode) {
+      setError("请先为本批次选择一个 QA 类型");
+      return;
+    }
+    if (!applicationId) {
+      setError("请先为本批次选择一个项目");
+      return;
+    }
 
     setSubmitting(true);
     setError(null);
     try {
       const formData = new FormData();
       formData.append("file", file);
-      const query = new URLSearchParams({
-        name: name || "manual-batch",
-        source: source || "manual-upload"
-      });
-      await apiFetch(`/api/admin/imports/upload?${query.toString()}`, {
+      formData.append("name", name || "manual-batch");
+      formData.append("source", source || "manual-upload");
+      formData.append("application_id", applicationId);
+      formData.append("technical_type_code", technicalTypeCode);
+      formData.append("business_tags_json", JSON.stringify(selectedBusinessTags));
+      await apiFetch("/api/admin/imports/upload", {
         method: "POST",
         body: formData
       });
       setName("");
       setSource("");
+      setApplicationId("");
+      setTechnicalTypeCode("");
+      setSelectedBusinessTags([]);
       setFile(null);
       await loadBatches();
     } catch (err) {
@@ -178,7 +213,7 @@ export default function AdminImportsPage() {
     <div className="space-y-6">
       <div>
         <p className="text-sm text-muted-foreground">数据导入</p>
-        <h2 className="mt-2 font-serif text-4xl">上传 JSON，并在导入入口就锁定技术类型与业务标签</h2>
+        <h2 className="mt-2 font-serif text-4xl">上传 JSON，并在导入入口就锁定 QA 类型与领域场景</h2>
       </div>
       <section className="grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
         <Card>
@@ -187,58 +222,19 @@ export default function AdminImportsPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="rounded-[28px] border border-border bg-stone-50 p-5 text-sm leading-7 text-muted-foreground">
-              每条记录至少应包含 `application`、`question`、`answer`、`technical_type`，
-              其中 `business_tags` 为可选数组。MVP 当前要求每条 QA 只能有一个技术类型。
+              每条记录至少应包含 `question`、`answer`。项目、QA 类型与领域场景都在上传批次时统一指定，
+              不再要求每条记录自己携带 `application`、`technical_type` 或 `business_tags`。
             </div>
             <pre className="overflow-x-auto rounded-3xl border border-border bg-white p-4 text-xs leading-6 text-muted-foreground">
 {`[
   {
     "id": "qa_001",
-    "application": "农业问答",
     "question": "番茄晚疫病如何防治？",
     "answer": "可通过轮作、降低湿度、及时喷施保护性杀菌剂等方式防治。",
-    "technical_type": "cot_qa",
-    "business_tags": ["pest_control", "tomato"],
     "context": "露地栽培，近期连续阴雨。"
   }
 ]`}
             </pre>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>当前可用分类</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div>
-              <p className="mb-2 text-sm font-medium">技术类型</p>
-              <div className="flex flex-wrap gap-2">
-                {technicalTypes.map((item) => (
-                  <Badge key={item.id} variant="warning">
-                    {item.code}
-                  </Badge>
-                ))}
-                {technicalTypes.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">当前没有启用的技术类型。</p>
-                ) : null}
-              </div>
-            </div>
-            <div>
-              <p className="mb-2 text-sm font-medium">业务标签</p>
-              <div className="flex flex-wrap gap-2">
-                {businessTags.map((item) => (
-                  <Badge key={item.id} variant="muted">
-                    {item.code}
-                  </Badge>
-                ))}
-                {businessTags.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">当前没有启用的业务标签。</p>
-                ) : null}
-              </div>
-            </div>
-            <div className="rounded-[28px] border border-dashed border-border bg-stone-50 p-4 text-sm leading-7 text-muted-foreground">
-              如果导入数据里的 `technical_type` 或 `business_tags` 不在这里，解析任务会进入失败明细。
-            </div>
           </CardContent>
         </Card>
       </section>
@@ -260,6 +256,54 @@ export default function AdminImportsPage() {
               value={source}
               onChange={(event) => setSource(event.target.value)}
             />
+            <select
+              className="field"
+              value={applicationId}
+              onChange={(event) => setApplicationId(event.target.value)}
+            >
+              <option value="">选择本批次项目</option>
+              {applications.map((item) => (
+                <option key={item.id} value={String(item.id)}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+            <select
+              className="field"
+              value={technicalTypeCode}
+              onChange={(event) => setTechnicalTypeCode(event.target.value)}
+            >
+              <option value="">选择本批次 QA 类型</option>
+              {technicalTypes.map((item) => (
+                <option key={item.id} value={item.code}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+            <div className="rounded-3xl border border-border bg-stone-50 p-4">
+              <p className="mb-3 text-sm font-medium">为本批次选择领域场景</p>
+              <div className="flex flex-wrap gap-2">
+                {businessTags.map((item) => {
+                  const selected = selectedBusinessTags.includes(item.code);
+                  return (
+                    <Button
+                      key={item.id}
+                      size="sm"
+                      variant={selected ? "default" : "secondary"}
+                      onClick={() =>
+                        setSelectedBusinessTags((current) =>
+                          selected
+                            ? current.filter((code) => code !== item.code)
+                            : [...current, item.code]
+                        )
+                      }
+                    >
+                      {item.name}
+                    </Button>
+                  );
+                })}
+              </div>
+            </div>
             <label className="flex cursor-pointer flex-col items-center justify-center rounded-[28px] border border-dashed border-border bg-stone-50 p-8 text-center text-sm text-muted-foreground">
               <span>{file ? file.name : "拖拽或选择 JSON 文件"}</span>
               <input
@@ -305,6 +349,19 @@ export default function AdminImportsPage() {
                     <p className="text-sm text-muted-foreground">
                       {batch.source || "无来源说明"} / {statText(batch)}
                     </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {batch.application_name ? (
+                        <Badge variant="default">{batch.application_name}</Badge>
+                      ) : null}
+                      {batch.technical_type_name ? (
+                        <Badge variant="warning">{batch.technical_type_name}</Badge>
+                      ) : null}
+                      {parseBusinessTags(batch.business_tags_json).map((tag) => (
+                        <Badge key={`${batch.id}-${tag}`} variant="muted">
+                          {tag}
+                        </Badge>
+                      ))}
+                    </div>
                     <p className="text-sm text-muted-foreground">
                       创建于 {formatTime(batch.created_at)}
                     </p>
@@ -430,6 +487,11 @@ export default function AdminImportsPage() {
               <>
                 <div className="rounded-[28px] border border-border bg-stone-50 p-5">
                   <p className="font-medium">{failureDetail.batch.name}</p>
+                  {failureDetail.batch.application_name ? (
+                    <div className="mt-3">
+                      <Badge variant="default">{failureDetail.batch.application_name}</Badge>
+                    </div>
+                  ) : null}
                   <p className="mt-2 text-sm text-muted-foreground">
                     总计 {failureDetail.batch.total_count} / 成功 {failureDetail.batch.success_count} /
                     失败 {failureDetail.batch.fail_count}

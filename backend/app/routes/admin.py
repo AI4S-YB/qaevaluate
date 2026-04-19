@@ -3,10 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 import json
 from pathlib import Path
+import time
 from typing import Optional, Tuple
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -14,6 +15,8 @@ from ..auth import CurrentUser, require_admin
 from ..config import QUEUE_DIR, UPLOAD_DIR
 from ..db import db_cursor
 from ..jobs import queue_job
+from ..llm_client import LlmClientError, call_openai_compatible_chat
+from ..llm_config_store import get_llm_api_key, mask_api_key, set_llm_api_key
 from ..worker import get_next_job, process_job
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -23,8 +26,25 @@ def now_iso() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat()
 
 
+def parse_tag_codes(value: Optional[str]) -> set[str]:
+    if not value:
+        return set()
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return set()
+    if not isinstance(parsed, list):
+        return set()
+    return {str(item) for item in parsed if isinstance(item, str) and item}
+
+
 class ExpertDecisionPayload(BaseModel):
     note: Optional[str] = None
+
+
+class ExpertSettingsPayload(BaseModel):
+    business_tag_ids: list[int] = Field(default_factory=list)
+    allow_cross_business_review: bool = False
 
 
 class DispatchPayload(BaseModel):
@@ -56,6 +76,17 @@ class TaxonomyUpdatePayload(BaseModel):
     description: Optional[str] = None
     is_active: Optional[bool] = None
     sort_order: Optional[int] = None
+
+
+class LlmConfigPayload(BaseModel):
+    name: str
+    provider_type: str = "openai_compatible"
+    base_url: str
+    api_key: str
+    model_name: str
+    system_prompt: Optional[str] = None
+    temperature: float = 0.2
+    is_active: bool = False
 
 
 def queue_file(path: Path) -> dict:
@@ -104,6 +135,16 @@ def serialize_export_job(row) -> dict:
 def serialize_taxonomy(row) -> dict:
     item = dict(row)
     item["is_active"] = bool(item["is_active"])
+    return item
+
+
+def serialize_llm_config(row) -> dict:
+    item = dict(row)
+    fallback_api_key = item.pop("api_key", None)
+    api_key = get_llm_api_key(item["id"], fallback_api_key)
+    item["is_active"] = bool(item["is_active"])
+    item["api_key_masked"] = mask_api_key(api_key)
+    item["has_api_key"] = bool(api_key)
     return item
 
 
@@ -324,6 +365,242 @@ def update_business_tag(
             tuple(values),
         )
     return {"code": 0, "message": "ok", "data": {"id": taxonomy_id}}
+
+
+@router.get("/llm-configs")
+def list_llm_configs(current_user: CurrentUser = Depends(require_admin)):
+    with db_cursor() as cursor:
+        rows = cursor.execute(
+            """
+            SELECT
+              id,
+              name,
+              provider_type,
+              base_url,
+              api_key,
+              model_name,
+              system_prompt,
+              temperature,
+              is_active,
+              last_tested_at,
+              last_test_status,
+              last_test_message,
+              last_test_latency_ms,
+              created_at,
+              updated_at
+            FROM llm_configs
+            ORDER BY is_active DESC, id DESC
+            """
+        ).fetchall()
+    return {"code": 0, "message": "ok", "data": [serialize_llm_config(row) for row in rows]}
+
+
+@router.post("/llm-configs")
+def create_llm_config(
+    payload: LlmConfigPayload,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    created_at = now_iso()
+    api_key = payload.api_key.strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="api key is required")
+    with db_cursor() as cursor:
+        existing = cursor.execute(
+            "SELECT id FROM llm_configs WHERE name = ?",
+            (payload.name,),
+        ).fetchone()
+        if existing:
+            raise HTTPException(status_code=400, detail="llm config already exists")
+        if payload.is_active:
+            cursor.execute("UPDATE llm_configs SET is_active = 0")
+        cursor.execute(
+            """
+            INSERT INTO llm_configs (
+              name, provider_type, base_url, api_key, model_name,
+              system_prompt, temperature, is_active,
+              last_tested_at, last_test_status, last_test_message, last_test_latency_ms,
+              created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
+            """,
+            (
+                payload.name,
+                payload.provider_type,
+                payload.base_url.strip(),
+                "",
+                payload.model_name.strip(),
+                payload.system_prompt,
+                payload.temperature,
+                1 if payload.is_active else 0,
+                created_at,
+                created_at,
+            ),
+        )
+        config_id = int(cursor.lastrowid)
+    set_llm_api_key(config_id, api_key)
+    return {"code": 0, "message": "ok", "data": {"id": config_id}}
+
+
+@router.patch("/llm-configs/{config_id}")
+def update_llm_config(
+    config_id: int,
+    payload: LlmConfigPayload,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    updated_at = now_iso()
+    with db_cursor() as cursor:
+        existing = cursor.execute(
+            "SELECT id, api_key FROM llm_configs WHERE id = ?",
+            (config_id,),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="llm config not found")
+        api_key = payload.api_key.strip()
+        if api_key == "__KEEP_EXISTING__" or not api_key:
+            api_key = get_llm_api_key(config_id, existing["api_key"])
+        if payload.is_active:
+            cursor.execute("UPDATE llm_configs SET is_active = 0 WHERE id != ?", (config_id,))
+        cursor.execute(
+            """
+            UPDATE llm_configs
+            SET name = ?,
+                provider_type = ?,
+                base_url = ?,
+                api_key = ?,
+                model_name = ?,
+                system_prompt = ?,
+                temperature = ?,
+                is_active = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                payload.name,
+                payload.provider_type,
+                payload.base_url.strip(),
+                "",
+                payload.model_name.strip(),
+                payload.system_prompt,
+                payload.temperature,
+                1 if payload.is_active else 0,
+                updated_at,
+                config_id,
+            ),
+        )
+    if api_key:
+        set_llm_api_key(config_id, api_key)
+    return {"code": 0, "message": "ok", "data": {"id": config_id}}
+
+
+@router.post("/llm-configs/{config_id}/activate")
+def activate_llm_config(
+    config_id: int,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    with db_cursor() as cursor:
+        existing = cursor.execute(
+            "SELECT id FROM llm_configs WHERE id = ?",
+            (config_id,),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="llm config not found")
+        cursor.execute("UPDATE llm_configs SET is_active = 0")
+        cursor.execute(
+            "UPDATE llm_configs SET is_active = 1, updated_at = ? WHERE id = ?",
+            (now_iso(), config_id),
+        )
+    return {"code": 0, "message": "ok", "data": {"id": config_id, "is_active": True}}
+
+
+@router.post("/llm-configs/{config_id}/test")
+def test_llm_config(
+    config_id: int,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    with db_cursor() as cursor:
+        row = cursor.execute(
+            """
+            SELECT
+              id,
+              name,
+              provider_type,
+              base_url,
+              api_key,
+              model_name,
+              system_prompt,
+              temperature
+            FROM llm_configs
+            WHERE id = ?
+            """,
+            (config_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="llm config not found")
+
+    api_key = get_llm_api_key(config_id, row["api_key"])
+    tested_at = now_iso()
+    if not api_key:
+        message = "本地未找到 API Key，请先在当前机器保存密钥。"
+        with db_cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE llm_configs
+                SET last_tested_at = ?, last_test_status = 'failed',
+                    last_test_message = ?, last_test_latency_ms = NULL
+                WHERE id = ?
+                """,
+                (tested_at, message, config_id),
+            )
+        return {"code": 0, "message": "ok", "data": {"passed": False, "message": message}}
+
+    started = time.perf_counter()
+    try:
+        if row["provider_type"] != "openai_compatible":
+            raise LlmClientError(f"unsupported provider: {row['provider_type']}")
+        content = call_openai_compatible_chat(
+            base_url=row["base_url"],
+            api_key=api_key,
+            model_name=row["model_name"],
+            messages=[
+                {"role": "system", "content": "你是连接检测助手。只返回 TEST_OK。"},
+                {"role": "user", "content": "请返回 TEST_OK"},
+            ],
+            temperature=float(row["temperature"]),
+        )
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        message = f"连接成功，模型返回：{content}"
+        with db_cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE llm_configs
+                SET last_tested_at = ?, last_test_status = 'passed',
+                    last_test_message = ?, last_test_latency_ms = ?
+                WHERE id = ?
+                """,
+                (tested_at, message, latency_ms, config_id),
+            )
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": {"passed": True, "message": message, "latency_ms": latency_ms},
+        }
+    except Exception as exc:
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        message = str(exc)
+        with db_cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE llm_configs
+                SET last_tested_at = ?, last_test_status = 'failed',
+                    last_test_message = ?, last_test_latency_ms = ?
+                WHERE id = ?
+                """,
+                (tested_at, message, latency_ms, config_id),
+            )
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": {"passed": False, "message": message, "latency_ms": latency_ms},
+        }
 
 
 @router.get("/analytics/summary")
@@ -642,23 +919,132 @@ def list_experts(
           u.title,
           u.status,
           u.created_at,
-          COALESCE(GROUP_CONCAT(a.name, ' / '), '') AS applications
+          u.allow_cross_business_review
         FROM users u
-        LEFT JOIN expert_applications ea ON ea.expert_user_id = u.id
-        LEFT JOIN applications a ON a.id = ea.application_id
         WHERE u.role = 'expert'
     """
     params: Tuple[str, ...] = ()
     if status:
         query += " AND u.status = ?"
         params = (status,)
-    query += """
-        GROUP BY u.id, u.username, u.full_name, u.organization, u.title, u.status, u.created_at
-        ORDER BY u.id DESC
-    """
+    query += " ORDER BY u.id DESC"
     with db_cursor() as cursor:
         rows = cursor.execute(query, params).fetchall()
-    return {"code": 0, "message": "ok", "data": [dict(row) for row in rows]}
+        experts = [dict(row) for row in rows]
+        if not experts:
+            return {"code": 0, "message": "ok", "data": []}
+
+        expert_ids = tuple(expert["id"] for expert in experts)
+        placeholders = ",".join("?" for _ in expert_ids)
+        application_rows = cursor.execute(
+            f"""
+            SELECT ea.expert_user_id, a.id, a.name
+            FROM expert_applications ea
+            JOIN applications a ON a.id = ea.application_id
+            WHERE ea.expert_user_id IN ({placeholders})
+            ORDER BY ea.priority ASC, a.name ASC
+            """,
+            expert_ids,
+        ).fetchall()
+        business_tag_rows = cursor.execute(
+            f"""
+            SELECT ebt.expert_user_id, b.id, b.name
+            FROM expert_business_tags ebt
+            JOIN business_tags b ON b.id = ebt.business_tag_id
+            WHERE ebt.expert_user_id IN ({placeholders})
+            ORDER BY ebt.priority ASC, b.name ASC
+            """,
+            expert_ids,
+        ).fetchall()
+
+    application_map: dict[int, list[dict]] = {}
+    for row in application_rows:
+        application_map.setdefault(row["expert_user_id"], []).append(
+            {"id": row["id"], "name": row["name"]}
+        )
+
+    business_tag_map: dict[int, list[dict]] = {}
+    for row in business_tag_rows:
+        business_tag_map.setdefault(row["expert_user_id"], []).append(
+            {"id": row["id"], "name": row["name"]}
+        )
+
+    for expert in experts:
+        expert["applications"] = application_map.get(expert["id"], [])
+        expert["business_tags"] = business_tag_map.get(expert["id"], [])
+        expert["allow_cross_business_review"] = bool(expert["allow_cross_business_review"])
+
+    return {"code": 0, "message": "ok", "data": experts}
+
+
+@router.patch("/experts/{expert_id}")
+def update_expert_settings(
+    expert_id: int,
+    payload: ExpertSettingsPayload,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    updated_at = now_iso()
+    selected_business_tags: set[str] = set()
+    with db_cursor() as cursor:
+        expert = cursor.execute(
+            "SELECT id FROM users WHERE id = ? AND role = 'expert'",
+            (expert_id,),
+        ).fetchone()
+        if not expert:
+            raise HTTPException(status_code=404, detail="expert not found")
+
+        cursor.execute(
+            """
+            UPDATE users
+            SET allow_cross_business_review = ?
+            WHERE id = ?
+            """,
+            (1 if payload.allow_cross_business_review else 0, expert_id),
+        )
+        cursor.execute(
+            "DELETE FROM expert_business_tags WHERE expert_user_id = ?",
+            (expert_id,),
+        )
+        for priority, business_tag_id in enumerate(payload.business_tag_ids, start=1):
+            tag = cursor.execute(
+                "SELECT code FROM business_tags WHERE id = ?",
+                (business_tag_id,),
+            ).fetchone()
+            if not tag:
+                continue
+            selected_business_tags.add(tag["code"])
+            cursor.execute(
+                """
+                INSERT INTO expert_business_tags (
+                  expert_user_id, business_tag_id, priority, created_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (expert_id, business_tag_id, priority, updated_at),
+            )
+        if not payload.allow_cross_business_review:
+            pending_tasks = cursor.execute(
+                """
+                SELECT t.id, q.business_tags_json
+                FROM evaluation_tasks t
+                JOIN qa_items q ON q.id = t.qa_item_id
+                WHERE t.expert_user_id = ?
+                  AND t.status IN ('pending', 'in_progress')
+                """,
+                (expert_id,),
+            ).fetchall()
+            for task in pending_tasks:
+                qa_tags = parse_tag_codes(task["business_tags_json"])
+                if qa_tags and not (qa_tags & selected_business_tags):
+                    cursor.execute(
+                        """
+                        UPDATE evaluation_tasks
+                        SET status = 'cancelled'
+                        WHERE id = ?
+                        """,
+                        (task["id"],),
+                    )
+
+    return {"code": 0, "message": "ok", "data": {"id": expert_id}}
 
 
 @router.post("/experts/{expert_id}/approve")
@@ -725,10 +1111,20 @@ def disable_expert(
 @router.post("/imports/upload")
 async def upload_import(
     file: UploadFile = File(...),
-    name: str = "default-batch",
-    source: str = "manual-upload",
+    name: str = Form(default="default-batch"),
+    source: str = Form(default="manual-upload"),
+    application_id: int = Form(...),
+    technical_type_code: str = Form(...),
+    business_tags_json: str = Form(default="[]"),
     current_user: CurrentUser = Depends(require_admin),
 ):
+    try:
+        business_tags = json.loads(business_tags_json)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="business_tags_json must be valid json") from exc
+    if not isinstance(business_tags, list) or not all(isinstance(item, str) for item in business_tags):
+        raise HTTPException(status_code=400, detail="business_tags_json must be an array of strings")
+
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     filename = f"{uuid4().hex}_{Path(file.filename or 'dataset.json').name}"
     file_path = UPLOAD_DIR / filename
@@ -736,13 +1132,56 @@ async def upload_import(
 
     created_at = now_iso()
     with db_cursor() as cursor:
+        application = cursor.execute(
+            """
+            SELECT id
+            FROM applications
+            WHERE id = ? AND is_active = 1
+            """,
+            (application_id,),
+        ).fetchone()
+        if not application:
+            raise HTTPException(status_code=400, detail=f"application not found: {application_id}")
+        technical_type = cursor.execute(
+            """
+            SELECT id
+            FROM technical_types
+            WHERE code = ? AND is_active = 1
+            """,
+            (technical_type_code,),
+        ).fetchone()
+        if not technical_type:
+            raise HTTPException(status_code=400, detail=f"technical_type not found: {technical_type_code}")
+        if business_tags:
+            tag_rows = cursor.execute(
+                f"""
+                SELECT code
+                FROM business_tags
+                WHERE code IN ({",".join("?" for _ in business_tags)}) AND is_active = 1
+                """,
+                tuple(business_tags),
+            ).fetchall()
+            found_codes = {row["code"] for row in tag_rows}
+            missing_codes = [code for code in business_tags if code not in found_codes]
+            if missing_codes:
+                raise HTTPException(status_code=400, detail=f"business_tag not found: {missing_codes[0]}")
         cursor.execute(
             """
             INSERT INTO dataset_batches (
-              name, source, file_path, import_status, created_by, created_at
-            ) VALUES (?, ?, ?, 'uploaded', ?, ?)
+              name, source, file_path, application_id, technical_type_id, business_tags_json,
+              import_status, created_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'uploaded', ?, ?)
             """,
-            (name, source, str(file_path), current_user["id"], created_at),
+            (
+                name,
+                source,
+                str(file_path),
+                application["id"],
+                technical_type["id"],
+                json.dumps(business_tags, ensure_ascii=False),
+                current_user["id"],
+                created_at,
+            ),
         )
         batch_id = cursor.lastrowid
 
@@ -764,10 +1203,25 @@ def list_imports(current_user: CurrentUser = Depends(require_admin)):
     with db_cursor() as cursor:
         rows = cursor.execute(
             """
-            SELECT id, name, source, file_path, import_status,
-                   total_count, success_count, fail_count, created_at
-            FROM dataset_batches
-            ORDER BY id DESC
+            SELECT
+              b.id,
+              b.name,
+              b.source,
+              b.file_path,
+              b.import_status,
+              b.total_count,
+              b.success_count,
+              b.fail_count,
+              b.created_at,
+              b.application_id,
+              b.business_tags_json,
+              a.name AS application_name,
+              tt.code AS technical_type_code,
+              tt.name AS technical_type_name
+            FROM dataset_batches b
+            LEFT JOIN applications a ON a.id = b.application_id
+            LEFT JOIN technical_types tt ON tt.id = b.technical_type_id
+            ORDER BY b.id DESC
             """
         ).fetchall()
     return {"code": 0, "message": "ok", "data": [dict(row) for row in rows]}
@@ -778,9 +1232,22 @@ def list_import_failures(batch_id: int, current_user: CurrentUser = Depends(requ
     with db_cursor() as cursor:
         batch = cursor.execute(
             """
-            SELECT id, name, import_status, total_count, success_count, fail_count
-            FROM dataset_batches
-            WHERE id = ?
+            SELECT
+              b.id,
+              b.name,
+              b.import_status,
+              b.total_count,
+              b.success_count,
+              b.fail_count,
+              b.application_id,
+              b.business_tags_json,
+              a.name AS application_name,
+              tt.code AS technical_type_code,
+              tt.name AS technical_type_name
+            FROM dataset_batches b
+            LEFT JOIN applications a ON a.id = b.application_id
+            LEFT JOIN technical_types tt ON tt.id = b.technical_type_id
+            WHERE b.id = ?
             """,
             (batch_id,),
         ).fetchone()

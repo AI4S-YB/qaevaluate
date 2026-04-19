@@ -66,8 +66,82 @@ def apply_legacy_migrations(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS llm_configs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          provider_type TEXT NOT NULL CHECK(provider_type IN ('openai_compatible')),
+          base_url TEXT NOT NULL,
+          api_key TEXT NOT NULL,
+          model_name TEXT NOT NULL,
+          system_prompt TEXT,
+          temperature REAL NOT NULL DEFAULT 0.2,
+          is_active INTEGER NOT NULL DEFAULT 0,
+          last_tested_at TEXT,
+          last_test_status TEXT CHECK(last_test_status IN ('passed', 'failed')),
+          last_test_message TEXT,
+          last_test_latency_ms INTEGER,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS expert_business_tags (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          expert_user_id INTEGER NOT NULL,
+          business_tag_id INTEGER NOT NULL,
+          priority INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL,
+          UNIQUE(expert_user_id, business_tag_id),
+          FOREIGN KEY (expert_user_id) REFERENCES users(id),
+          FOREIGN KEY (business_tag_id) REFERENCES business_tags(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS expert_task_abandons (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          qa_item_id INTEGER NOT NULL,
+          answer_id INTEGER NOT NULL,
+          expert_user_id INTEGER NOT NULL,
+          task_type TEXT NOT NULL CHECK(task_type IN ('initial_review', 'dispute_review', 'final_confirm')),
+          created_at TEXT NOT NULL,
+          UNIQUE(answer_id, expert_user_id, task_type),
+          FOREIGN KEY (qa_item_id) REFERENCES qa_items(id),
+          FOREIGN KEY (answer_id) REFERENCES qa_answers(id),
+          FOREIGN KEY (expert_user_id) REFERENCES users(id)
+        )
+        """
+    )
     ensure_column(conn, "qa_items", "technical_type_id INTEGER", "technical_type_id")
     ensure_column(conn, "qa_items", "business_tags_json TEXT", "business_tags_json")
+    ensure_column(
+        conn,
+        "dataset_batches",
+        "application_id INTEGER REFERENCES applications(id)",
+        "application_id",
+    )
+    ensure_column(conn, "dataset_batches", "technical_type_id INTEGER", "technical_type_id")
+    ensure_column(conn, "dataset_batches", "business_tags_json TEXT", "business_tags_json")
+    ensure_column(conn, "llm_configs", "last_tested_at TEXT", "last_tested_at")
+    ensure_column(
+        conn,
+        "llm_configs",
+        "last_test_status TEXT CHECK(last_test_status IN ('passed', 'failed'))",
+        "last_test_status",
+    )
+    ensure_column(conn, "llm_configs", "last_test_message TEXT", "last_test_message")
+    ensure_column(conn, "llm_configs", "last_test_latency_ms INTEGER", "last_test_latency_ms")
+    ensure_column(
+        conn,
+        "users",
+        "allow_cross_business_review INTEGER NOT NULL DEFAULT 0",
+        "allow_cross_business_review",
+    )
     ensure_column(
         conn,
         "evaluation_records",
@@ -86,6 +160,9 @@ def apply_legacy_migrations(conn: sqlite3.Connection) -> None:
         "reasoning_support TEXT CHECK(reasoning_support IN ('strong', 'medium', 'weak'))",
         "reasoning_support",
     )
+    ensure_column(conn, "llm_messages", "target_answer_id INTEGER", "target_answer_id")
+    ensure_column(conn, "llm_messages", "generated_answer_id INTEGER", "generated_answer_id")
+    ensure_column(conn, "llm_messages", "review_json TEXT", "review_json")
     conn.commit()
 
 

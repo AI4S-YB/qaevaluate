@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 type TaxonomyKind = "technical-types" | "business-tags";
 
 function sectionTitle(kind: TaxonomyKind) {
-  return kind === "technical-types" ? "技术类型" : "业务标签";
+  return kind === "technical-types" ? "QA 类型" : "领域场景";
 }
 
 function emptyForm() {
@@ -217,7 +217,7 @@ export default function AdminTaxonomyPage() {
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p className="text-sm text-muted-foreground">分类配置</p>
-          <h2 className="mt-2 font-serif text-4xl">把技术类型和业务标签变成可维护的后台配置</h2>
+          <h2 className="mt-2 font-serif text-4xl">把 QA 类型和领域场景变成可维护的后台配置</h2>
         </div>
         <Button variant="secondary" onClick={() => void loadTaxonomy()}>
           刷新全部
@@ -237,10 +237,10 @@ export default function AdminTaxonomyPage() {
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {[
-          ["技术类型总数", summary.technicalTotal],
-          ["启用技术类型", summary.technicalActive],
-          ["业务标签总数", summary.tagTotal],
-          ["启用业务标签", summary.tagActive]
+          ["QA 类型总数", summary.technicalTotal],
+          ["启用 QA 类型", summary.technicalActive],
+          ["领域场景总数", summary.tagTotal],
+          ["启用领域场景", summary.tagActive]
         ].map(([label, value]) => (
           <Card key={label}>
             <CardContent className="p-5">

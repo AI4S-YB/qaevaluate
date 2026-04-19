@@ -1,10 +1,14 @@
 "use client";
 
-import { useParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { Ban, ChevronLeft, ChevronRight, Pencil, Save, X } from "lucide-react";
+import { useParams, useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  API_BASE_URL,
   apiFetch,
+  getStoredAuthToken,
+  type ExpertTaskListItem,
   type LlmMessage,
   type LlmSession,
   type TaskDetail,
@@ -97,7 +101,6 @@ const reasoningGroups = [
 ] as const;
 
 const quickCommentOptions = ["事实错误", "遗漏关键点", "表达不清", "偏题", "存在风险", "答案较优"];
-
 type ScoreState = {
   correctness_rating: string;
   completeness_rating: string;
@@ -160,22 +163,51 @@ function formatDate(value: string) {
   return value.replace("T", " ").slice(0, 16);
 }
 
+function findLatestGeneratedAnswerId(messages: LlmMessage[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === "assistant" && message.generated_answer_id) {
+      return message.generated_answer_id;
+    }
+  }
+  return null;
+}
+
+function normalizeAnswerText(value: string | null | undefined) {
+  return (value ?? "").trim();
+}
+
+const actionButtonClassName =
+  "h-12 min-w-[118px] rounded-2xl px-5 text-sm font-medium shadow-sm";
+
 export default function ExpertTaskDetailPage() {
   const params = useParams<{ taskId: string }>();
+  const router = useRouter();
   const taskId = params.taskId;
   const [detail, setDetail] = useState<TaskDetail | null>(null);
   const [scores, setScores] = useState<ScoreState>(initialScoreState);
   const [selectedCandidateId, setSelectedCandidateId] = useState<number | null>(null);
+  const [editableGeneratedAnswerText, setEditableGeneratedAnswerText] = useState("");
+  const [editableSourceAnswerId, setEditableSourceAnswerId] = useState<number | null>(null);
+  const [isEditingGeneratedAnswer, setIsEditingGeneratedAnswer] = useState(false);
+  const [isQuestionExpanded, setIsQuestionExpanded] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
+  const [deletingSessionId, setDeletingSessionId] = useState<number | null>(null);
   const [messages, setMessages] = useState<LlmMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [llmPrompt, setLlmPrompt] = useState("");
   const [llmBusy, setLlmBusy] = useState(false);
+  const [autoReviewing, setAutoReviewing] = useState(false);
   const [pollingSessionId, setPollingSessionId] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
+  const [abandoning, setAbandoning] = useState(false);
+  const [jumpingPrevious, setJumpingPrevious] = useState(false);
+  const [jumpingNext, setJumpingNext] = useState(false);
+  const [isLlmModalOpen, setIsLlmModalOpen] = useState(false);
+  const llmTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   async function loadDetail(showLoading = false) {
     if (showLoading) setLoading(true);
@@ -218,12 +250,27 @@ export default function ExpertTaskDetailPage() {
         const data = await apiFetch<TaskDetail>(`/api/expert/tasks/${taskId}`);
         setDetail(data);
         const savedPayload = resolveSavedPayload(data);
-        setSelectedCandidateId(
-          savedPayload?.payload.adopted_rewrite_answer_id ?? data.current_answer.id
-        );
+        const initialCandidateId =
+          savedPayload?.payload.adopted_rewrite_answer_id ?? data.current_answer.id;
+        setSelectedCandidateId(initialCandidateId);
         if (savedPayload) {
           setScores(normalizeDraftPayload(savedPayload.payload));
         }
+        if (initialCandidateId !== data.current_answer.id) {
+          const initialCandidate =
+            data.candidate_answers.find((item) => item.id === initialCandidateId) ?? null;
+          const editedAnswerText = normalizeAnswerText(
+            savedPayload?.payload.adopted_rewrite_answer_text
+          );
+          setEditableSourceAnswerId(initialCandidateId);
+          setEditableGeneratedAnswerText(
+            editedAnswerText || initialCandidate?.answer_text || ""
+          );
+        } else {
+          setEditableSourceAnswerId(null);
+          setEditableGeneratedAnswerText("");
+        }
+        setIsEditingGeneratedAnswer(false);
         const activeSession = data.llm_sessions.find((session) => session.status === "active");
         const firstSession = data.llm_sessions[0];
         if (firstSession) {
@@ -232,6 +279,10 @@ export default function ExpertTaskDetailPage() {
             `/api/expert/tasks/${taskId}/llm/sessions/${firstSession.id}/messages`
           );
           setMessages(llmMessages);
+          const generatedAnswerId = findLatestGeneratedAnswerId(llmMessages);
+          if (generatedAnswerId && !savedPayload?.payload.adopted_rewrite_answer_id) {
+            setSelectedCandidateId(generatedAnswerId);
+          }
         }
         if (activeSession) {
           setPollingSessionId(activeSession.id);
@@ -261,14 +312,25 @@ export default function ExpertTaskDetailPage() {
       if (cancelled || !latest) return;
 
       const targetSession = latest.llm_sessions.find((session) => session.id === pollingSessionId);
+      let sessionMessages: LlmMessage[] | null = null;
       if (targetSession) {
-        await loadMessages(targetSession.id);
+        sessionMessages = await loadMessages(targetSession.id);
       }
       if (cancelled) return;
 
       if (!targetSession || targetSession.status === "completed") {
         setPollingSessionId(null);
-        setNotice("LLM 结果已自动同步到当前页面。");
+        const generatedAnswerId = sessionMessages
+          ? findLatestGeneratedAnswerId(sessionMessages)
+          : null;
+        if (generatedAnswerId) {
+          setSelectedCandidateId(generatedAnswerId);
+        }
+        setNotice(
+          generatedAnswerId
+            ? `LLM 结果已自动同步，并已选中本轮生成的候选答案 #${generatedAnswerId}。`
+            : "LLM 结果已自动同步到当前页面。"
+        );
         return;
       }
       if (targetSession.status === "failed") {
@@ -276,9 +338,9 @@ export default function ExpertTaskDetailPage() {
         setError("LLM 任务失败，请稍后重试。");
         return;
       }
-      if (attempts >= 15) {
+      if (attempts >= 60) {
         setPollingSessionId(null);
-        setNotice("LLM 请求仍在处理中。若 worker 未运行，可稍后回到本页继续查看。");
+        setNotice("LLM 请求仍在处理中，你可以稍后回到本页继续查看。");
         return;
       }
 
@@ -299,53 +361,230 @@ export default function ExpertTaskDetailPage() {
     };
   }, [pollingSessionId]);
 
-  async function handleLlmAction(purpose: "fact_check" | "risk_check" | "compare" | "rewrite") {
-    if (!llmPrompt.trim() && purpose !== "rewrite") {
-      setError("请先输入一条简短提示词");
-      return;
+  useEffect(() => {
+    if (!isLlmModalOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const timeoutId = window.setTimeout(() => {
+      llmTextareaRef.current?.focus();
+    }, 0);
+
+    function handleKeydown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsLlmModalOpen(false);
+      }
     }
 
+    window.addEventListener("keydown", handleKeydown);
+    return () => {
+      window.clearTimeout(timeoutId);
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeydown);
+    };
+  }, [isLlmModalOpen]);
+
+  async function handleLlmAssist() {
+    if (!detail) return;
     setLlmBusy(true);
     setNotice(null);
     setError(null);
+    let sessionId = selectedSessionId;
     try {
-      let sessionId: number;
-      if (purpose === "rewrite") {
-        const result = await apiFetch<{ session_id: number }>(
-          `/api/expert/tasks/${taskId}/llm/rewrite`,
-          {
-            method: "POST",
-            body: JSON.stringify({ mode: llmPrompt.trim() || "balanced" })
-          }
-        );
-        sessionId = result.session_id;
-      } else {
+      const latestSessionCandidateId = findLatestGeneratedAnswerId(messages);
+      const promptText =
+        llmPrompt.trim() ||
+        "请基于当前问题、当前答案和已填写评分，评估这条答案是否合适，并给出更适合作为标准答案候选的修正版。";
+      const targetAnswerId =
+        latestSessionCandidateId ?? selectedCandidateId ?? detail.current_answer.id;
+      if (!sessionId) {
         const created = await apiFetch<{ session_id: number }>(
           `/api/expert/tasks/${taskId}/llm/sessions`,
           {
             method: "POST",
-            body: JSON.stringify({ purpose })
+            body: JSON.stringify({ purpose: "rewrite" })
           }
         );
         sessionId = created.session_id;
-        await apiFetch(
-          `/api/expert/tasks/${taskId}/llm/sessions/${sessionId}/messages`,
-          {
-            method: "POST",
-            body: JSON.stringify({ content: llmPrompt.trim() })
-          }
-        );
+      }
+      setSelectedSessionId(sessionId);
+      const now = new Date().toISOString();
+      const tempUserMessageId = -Date.now();
+      const tempAssistantMessageId = tempUserMessageId - 1;
+      setMessages((current) => [
+        ...current,
+        {
+          id: tempUserMessageId,
+          role: "user",
+          content: promptText,
+          target_answer_id: targetAnswerId,
+          generated_answer_id: null,
+          review_json: null,
+          created_at: now
+        },
+        {
+          id: tempAssistantMessageId,
+          role: "assistant",
+          content: "",
+          target_answer_id: targetAnswerId,
+          generated_answer_id: null,
+          review_json: null,
+          created_at: now
+        }
+      ]);
+
+      const authToken = getStoredAuthToken();
+      const response = await fetch(
+        `${API_BASE_URL}/api/expert/tasks/${taskId}/llm/sessions/${sessionId}/stream`,
+        {
+          method: "POST",
+          headers: {
+            ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            content: promptText,
+            target_answer_id: targetAnswerId,
+            score_context: scores
+          }),
+          cache: "no-store"
+        }
+      );
+      if (!response.ok || !response.body) {
+        const text = await response.text();
+        throw new Error(text || `request failed: ${response.status}`);
       }
 
-      setSelectedSessionId(sessionId);
+      const decoder = new TextDecoder();
+      const reader = response.body.getReader();
+      let buffer = "";
+      let streamedAssistantText = "";
+      let streamedCandidateAnswerId: number | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() ?? "";
+
+        for (const rawEvent of events) {
+          const lines = rawEvent.split("\n");
+          const eventName =
+            lines.find((line) => line.startsWith("event:"))?.slice(6).trim() ?? "message";
+          const dataText = lines
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trim())
+            .join("\n");
+          const payload = dataText ? (JSON.parse(dataText) as Record<string, unknown>) : {};
+
+          if (eventName === "delta") {
+            const chunk = typeof payload.content === "string" ? payload.content : "";
+            if (chunk) {
+              streamedAssistantText += chunk;
+              setMessages((current) =>
+                current.map((message) =>
+                  message.id === tempAssistantMessageId
+                    ? { ...message, content: streamedAssistantText }
+                    : message
+                )
+              );
+            }
+          }
+
+          if (eventName === "done") {
+            streamedCandidateAnswerId =
+              typeof payload.candidate_answer_id === "number"
+                ? payload.candidate_answer_id
+                : null;
+          }
+
+          if (eventName === "error") {
+            throw new Error(
+              typeof payload.detail === "string" ? payload.detail : "LLM 流式请求失败"
+            );
+          }
+        }
+      }
+
       await loadDetail();
       await loadMessages(sessionId);
-      setPollingSessionId(sessionId);
-      setNotice("LLM 请求已提交，页面会自动刷新消息和候选答案。");
+      if (streamedCandidateAnswerId) {
+        setSelectedCandidateId(streamedCandidateAnswerId);
+      }
+      setLlmPrompt("");
+      window.setTimeout(() => {
+        llmTextareaRef.current?.focus();
+      }, 0);
+      setNotice(
+        streamedCandidateAnswerId
+          ? `LLM 已流式完成，并生成候选答案 #${streamedCandidateAnswerId}。`
+          : "LLM 已流式完成。"
+      );
     } catch (err) {
+      await loadDetail();
+      if (sessionId) {
+        await loadMessages(sessionId);
+      }
       setError(err instanceof Error ? err.message : "LLM 请求失败");
     } finally {
       setLlmBusy(false);
+    }
+  }
+
+  async function handleAutoReview() {
+    if (!detail) return;
+    setAutoReviewing(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await apiFetch<{
+        session_id: number;
+        candidate_answer_id: number | null;
+        score_context: {
+          correctness_rating: string;
+          completeness_rating: string;
+          relevance_rating: string;
+          clarity_rating: string;
+          risk_flag: string;
+          reasoning_completeness?: string | null;
+          reasoning_consistency?: string | null;
+          reasoning_support?: string | null;
+          overall_decision: string;
+          quick_comment_codes: string[];
+        };
+      }>(`/api/expert/tasks/${taskId}/llm/auto-review`, {
+        method: "POST",
+        body: JSON.stringify({
+          target_answer_id: selectedCandidateId ?? detail.current_answer.id
+        })
+      });
+
+      setScores((current) => ({
+        ...current,
+        correctness_rating: result.score_context.correctness_rating ?? current.correctness_rating,
+        completeness_rating:
+          result.score_context.completeness_rating ?? current.completeness_rating,
+        relevance_rating: result.score_context.relevance_rating ?? current.relevance_rating,
+        clarity_rating: result.score_context.clarity_rating ?? current.clarity_rating,
+        risk_flag: result.score_context.risk_flag ?? current.risk_flag,
+        reasoning_completeness: result.score_context.reasoning_completeness ?? "",
+        reasoning_consistency: result.score_context.reasoning_consistency ?? "",
+        reasoning_support: result.score_context.reasoning_support ?? "",
+        overall_decision: result.score_context.overall_decision ?? current.overall_decision,
+        quick_comment_codes: result.score_context.quick_comment_codes ?? []
+      }));
+      setSelectedSessionId(result.session_id);
+      if (result.candidate_answer_id) {
+        setSelectedCandidateId(result.candidate_answer_id);
+      }
+      await loadDetail();
+      await loadMessages(result.session_id);
+      setNotice("自动化评测已完成，结构化评分和 LLM辅助生成答案已回填。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "自动化评测失败");
+    } finally {
+      setAutoReviewing(false);
     }
   }
 
@@ -358,7 +597,10 @@ export default function ExpertTaskDetailPage() {
         method: "POST",
         body: JSON.stringify({
           ...scores,
-          adopted_rewrite_answer_id: selectedCandidateId
+          adopted_rewrite_answer_id: selectedCandidateId,
+          adopted_rewrite_answer_text: hasEditedGeneratedAnswer
+            ? normalizeAnswerText(editableGeneratedAnswerText)
+            : null
         })
       });
       setNotice("草稿已保存。");
@@ -367,6 +609,77 @@ export default function ExpertTaskDetailPage() {
       setError(err instanceof Error ? err.message : "保存草稿失败");
     } finally {
       setSavingDraft(false);
+    }
+  }
+
+  async function goToAdjacentTask(direction: "previous" | "next", currentTaskId?: number) {
+    const taskList = await apiFetch<ExpertTaskListItem[]>("/api/expert/tasks");
+    const availableTasks = taskList.filter(
+      (item) => item.status === "pending" || item.status === "in_progress"
+    );
+    const currentId = currentTaskId ?? Number(taskId);
+    const currentIndex = availableTasks.findIndex((item) => item.id === currentId);
+    const targetTask =
+      currentIndex >= 0
+        ? availableTasks[currentIndex + (direction === "next" ? 1 : -1)]
+        : availableTasks[0];
+
+    if (targetTask) {
+      router.push(`/expert/tasks/${targetTask.id}`);
+      return true;
+    }
+    router.push("/expert/tasks");
+    return false;
+  }
+
+  async function handlePreviousTask() {
+    setJumpingPrevious(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const found = await goToAdjacentTask("previous", Number(taskId));
+      if (!found) {
+        setNotice("当前没有上一条待处理任务，已返回任务列表。");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "跳转上一题失败");
+    } finally {
+      setJumpingPrevious(false);
+    }
+  }
+
+  async function handleNextTask() {
+    setJumpingNext(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const found = await goToAdjacentTask("next", Number(taskId));
+      if (!found) {
+        setNotice("当前没有下一条待处理任务，已返回任务列表。");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "跳转下一题失败");
+    } finally {
+      setJumpingNext(false);
+    }
+  }
+
+  async function handleAbandonTask() {
+    setAbandoning(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await apiFetch(`/api/expert/tasks/${taskId}/abandon`, {
+        method: "POST"
+      });
+      setNotice("已放弃当前评测，正在跳转到下一题。");
+      window.setTimeout(() => {
+        void goToAdjacentTask("next", Number(taskId));
+      }, 600);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "放弃评测失败");
+    } finally {
+      setAbandoning(false);
     }
   }
 
@@ -404,7 +717,11 @@ export default function ExpertTaskDetailPage() {
         body: JSON.stringify({
           ...scores,
           adopted_rewrite_answer_id:
-            scores.overall_decision === "rewrite" ? selectedCandidateId : null
+            scores.overall_decision === "rewrite" ? selectedCandidateId : null,
+          adopted_rewrite_answer_text:
+            scores.overall_decision === "rewrite" && hasEditedGeneratedAnswer
+              ? normalizeAnswerText(editableGeneratedAnswerText)
+              : null
         })
       });
       const latest = await loadDetail();
@@ -417,11 +734,49 @@ export default function ExpertTaskDetailPage() {
           );
         }
       }
-      setNotice(isSubmitted ? "评测已重新提交，已覆盖上一次结果并触发聚合任务。" : "评测已提交，同时已触发聚合任务。");
+      setNotice(
+        isSubmitted
+          ? "评测已重新提交，正在跳转到下一题。"
+          : "评测提交成功，正在跳转到下一题。"
+      );
+      window.setTimeout(() => {
+        void goToAdjacentTask("next", Number(taskId));
+      }, 700);
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交失败");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleDeleteSession(sessionId: number) {
+    setDeletingSessionId(sessionId);
+    setError(null);
+    setNotice(null);
+    try {
+      await apiFetch(`/api/expert/tasks/${taskId}/llm/sessions/${sessionId}`, {
+        method: "DELETE"
+      });
+      if (pollingSessionId === sessionId) {
+        setPollingSessionId(null);
+      }
+
+      const latest = await loadDetail();
+      const remainingSessions = (latest?.llm_sessions ?? []).filter((session) => session.id !== sessionId);
+      if (selectedSessionId === sessionId) {
+        const nextSessionId = remainingSessions[0]?.id ?? null;
+        setSelectedSessionId(nextSessionId);
+        if (nextSessionId) {
+          await loadMessages(nextSessionId);
+        } else {
+          setMessages([]);
+        }
+      }
+      setNotice(`会话 #${sessionId} 已删除。`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除会话失败");
+    } finally {
+      setDeletingSessionId(null);
     }
   }
 
@@ -438,6 +793,35 @@ export default function ExpertTaskDetailPage() {
   const isPolling = pollingSessionId !== null;
   const isSubmitted = detail?.task.status === "submitted";
   const isCotQa = detail?.qa_item.technical_type_code === "cot_qa";
+  const activeCandidate =
+    candidates.find((answer) => answer.id === selectedCandidateId) ?? detail?.current_answer ?? null;
+  const showingGeneratedAnswer = Boolean(
+    detail && activeCandidate && activeCandidate.id !== detail.current_answer.id
+  );
+  const hasEditedGeneratedAnswer = Boolean(
+    showingGeneratedAnswer &&
+      normalizeAnswerText(editableGeneratedAnswerText) &&
+      normalizeAnswerText(editableGeneratedAnswerText) !== normalizeAnswerText(activeCandidate?.answer_text)
+  );
+  const displayedGeneratedAnswerText =
+    showingGeneratedAnswer && editableGeneratedAnswerText
+      ? editableGeneratedAnswerText
+      : activeCandidate?.answer_text ?? "";
+
+  useEffect(() => {
+    if (!detail) return;
+    if (!activeCandidate || activeCandidate.id === detail.current_answer.id) {
+      setEditableSourceAnswerId(null);
+      setEditableGeneratedAnswerText("");
+      setIsEditingGeneratedAnswer(false);
+      return;
+    }
+    if (activeCandidate.id !== editableSourceAnswerId) {
+      setEditableSourceAnswerId(activeCandidate.id);
+      setEditableGeneratedAnswerText(activeCandidate.answer_text);
+      setIsEditingGeneratedAnswer(false);
+    }
+  }, [activeCandidate, detail, editableSourceAnswerId]);
 
   if (loading) {
     return (
@@ -518,7 +902,7 @@ export default function ExpertTaskDetailPage() {
             </div>
             <div className="rounded-[28px] border border-border bg-white p-5">
               <p className="text-sm text-muted-foreground">
-                当前答案 v{detail.current_answer.version_no}
+                答案 v{detail.current_answer.version_no}
                 {detail.current_answer.source_model
                   ? ` / ${detail.current_answer.source_model}`
                   : ""}
@@ -527,6 +911,38 @@ export default function ExpertTaskDetailPage() {
                 {detail.current_answer.answer_text}
               </p>
             </div>
+            {showingGeneratedAnswer ? (
+              <div className="rounded-[28px] border border-emerald-200 bg-emerald-50 p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm text-emerald-700">
+                    {hasEditedGeneratedAnswer
+                      ? "LLM辅助生成答案 + 用户编辑"
+                      : "LLM辅助生成答案"}
+                    {activeCandidate?.version_no ? ` / v${activeCandidate.version_no}` : ""}
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="bg-white/80 text-emerald-800 ring-1 ring-emerald-200 hover:bg-white"
+                    onClick={() => setIsEditingGeneratedAnswer((current) => !current)}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                    {isEditingGeneratedAnswer ? "完成编辑" : "编辑"}
+                  </Button>
+                </div>
+                {isEditingGeneratedAnswer ? (
+                  <textarea
+                    className="mt-3 min-h-[180px] w-full rounded-[20px] border border-emerald-200 bg-white px-4 py-3 leading-7 text-emerald-950 outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+                    value={displayedGeneratedAnswerText}
+                    onChange={(event) => setEditableGeneratedAnswerText(event.target.value)}
+                  />
+                ) : (
+                  <p className="mt-2 whitespace-pre-wrap leading-8 text-emerald-950">
+                    {displayedGeneratedAnswerText}
+                  </p>
+                )}
+              </div>
+            ) : null}
           </CardContent>
         </Card>
 
@@ -657,159 +1073,300 @@ export default function ExpertTaskDetailPage() {
         </Card>
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
-        <Card>
-          <CardHeader className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex items-center gap-3">
-              <CardTitle>LLM 对话辅助</CardTitle>
-              {isPolling ? <Badge variant="warning">自动刷新中</Badge> : null}
-            </div>
-            <Button variant="secondary" size="sm" onClick={() => void loadDetail()}>
-              手动刷新
+      <section className="rounded-[32px] border border-border bg-white p-5 shadow-soft">
+        <div className="space-y-4">
+          <div>
+            <p className="text-sm font-medium text-foreground">操作区</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              `自动化评测` 会自动回填结构化评分和 LLM辅助生成答案；`LLM辅助评测` 用于打开对话框继续和模型讨论与改写；圆形图标按钮依次用于 `上一题`、`下一题`、`放弃评测`、`暂存`；`提交评测` 用于正式提交结果。
+            </p>
+          </div>
+          <div className="flex flex-nowrap items-center justify-center gap-3 overflow-x-auto pb-1">
+            <Button
+              variant="secondary"
+              className={`${actionButtonClassName} min-w-[110px] shrink-0 bg-amber-50 text-amber-700 ring-1 ring-amber-200 hover:bg-amber-100`}
+              disabled={jumpingPrevious}
+              onClick={() => void handlePreviousTask()}
+              title={jumpingPrevious ? "跳转上一题中" : "上一题"}
+              aria-label={jumpingPrevious ? "跳转上一题中" : "上一题"}
+            >
+              <ChevronLeft className="h-4 w-4" />
+              <span>{jumpingPrevious ? "跳转中…" : "上一题"}</span>
             </Button>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <textarea
-              className="field-textarea"
-              placeholder="输入简短提示词，例如：请指出当前答案遗漏的关键点"
-              value={llmPrompt}
-              onChange={(event) => setLlmPrompt(event.target.value)}
-            />
-            <div className="flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                disabled={llmBusy}
-                onClick={() => void handleLlmAction("fact_check")}
-              >
-                事实检查
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={llmBusy}
-                onClick={() => void handleLlmAction("risk_check")}
-              >
-                风险检查
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={llmBusy}
-                onClick={() => void handleLlmAction("compare")}
-              >
-                比较分析
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={llmBusy}
-                onClick={() => void handleLlmAction("rewrite")}
-              >
-                生成改写
-              </Button>
+            <Button
+              variant="secondary"
+              className={`${actionButtonClassName} min-w-[110px] shrink-0 bg-sky-50 text-sky-700 ring-1 ring-sky-200 hover:bg-sky-100`}
+              disabled={jumpingNext}
+              onClick={() => void handleNextTask()}
+              title={jumpingNext ? "跳转下一题中" : "下一题"}
+              aria-label={jumpingNext ? "跳转下一题中" : "下一题"}
+            >
+              <ChevronRight className="h-4 w-4" />
+              <span>{jumpingNext ? "跳转中…" : "下一题"}</span>
+            </Button>
+            <Button
+              className={actionButtonClassName}
+              disabled={autoReviewing}
+              onClick={() => void handleAutoReview()}
+            >
+              {autoReviewing ? "自动评测中…" : "自动化评测"}
+            </Button>
+            <Button
+              className={`${actionButtonClassName} bg-stone-900 text-white hover:bg-stone-800`}
+              variant="secondary"
+              onClick={() => setIsLlmModalOpen(true)}
+            >
+              LLM辅助评测
+            </Button>
+            <Button
+              size="icon"
+              variant="secondary"
+              className="shrink-0 bg-rose-50 text-rose-700 ring-1 ring-rose-200 hover:bg-rose-100"
+              disabled={abandoning}
+              onClick={() => void handleAbandonTask()}
+              title={abandoning ? "放弃评测中" : "放弃评测"}
+              aria-label={abandoning ? "放弃评测中" : "放弃评测"}
+            >
+              <Ban className="h-4 w-4" />
+            </Button>
+            <Button
+              size="icon"
+              variant="secondary"
+              className="shrink-0 bg-white text-foreground ring-1 ring-border hover:bg-stone-100"
+              disabled={savingDraft}
+              onClick={() => void handleSaveDraft()}
+              title={savingDraft ? "暂存中" : "暂存"}
+              aria-label={savingDraft ? "暂存中" : "暂存"}
+            >
+              <Save className="h-4 w-4" />
+            </Button>
+            <Button
+              className={`${actionButtonClassName} bg-emerald-600 text-white hover:bg-emerald-500`}
+              disabled={submitting}
+              onClick={() => void handleSubmit()}
+            >
+              {submitting ? "提交中…" : "提交评测"}
+            </Button>
+          </div>
+        </div>
+      </section>
+
+      {isLlmModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/40 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-[32px] border border-border bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <div>
+                <p className="text-sm text-muted-foreground">LLM 辅助评测</p>
+                <h3 className="text-xl font-semibold text-foreground">当前任务 #{detail.task.id}</h3>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    setSelectedSessionId(null);
+                    setMessages([]);
+                    setNotice("已切换为新对话，下一次发送会创建新的 LLM 会话。");
+                  }}
+                >
+                  新建对话
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => setIsLlmModalOpen(false)}>
+                  关闭
+                </Button>
+              </div>
             </div>
 
-            <div className="rounded-[28px] border border-border bg-stone-50 p-4">
-              <div className="mb-3 flex flex-wrap gap-2">
+            <div className="border-b border-border bg-[linear-gradient(180deg,#fafaf9_0%,#f5f5f4_100%)] px-6 py-3">
+              <div className="grid gap-3 lg:grid-cols-[1.15fr_0.85fr]">
+                <div className="rounded-[20px] border border-border bg-white px-4 py-3 shadow-sm">
+                  <div className="flex items-start gap-3">
+                    <span className="rounded-full bg-stone-100 px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+                      问题
+                    </span>
+                    <button
+                      type="button"
+                      className={`min-w-0 flex-1 text-left text-sm leading-6 text-foreground ${
+                        isQuestionExpanded ? "" : "line-clamp-1"
+                      }`}
+                      onClick={() => setIsQuestionExpanded((current) => !current)}
+                      title={isQuestionExpanded ? "收起问题全文" : detail.qa_item.question_text}
+                    >
+                      {detail.qa_item.question_text}
+                    </button>
+                  </div>
+                </div>
+                <div className="rounded-[20px] border border-border bg-white px-4 py-3 shadow-sm">
+                  <div className="flex items-start gap-3">
+                    <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] uppercase tracking-[0.18em] text-emerald-700">
+                      答案
+                    </span>
+                    <p className="min-w-0 flex-1 text-sm leading-6 text-muted-foreground">
+                      当前选中答案 #{selectedCandidateId ?? detail.current_answer.id}
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
                 {sessions.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">当前还没有 LLM 会话。</p>
+                  <span className="text-sm text-muted-foreground">当前还没有 LLM 会话。</span>
                 ) : null}
                 {sessions.map((session: LlmSession) => (
-                  <Button
-                    key={session.id}
-                    size="sm"
-                    variant={selectedSessionId === session.id ? "default" : "secondary"}
-                    onClick={() => {
-                      setSelectedSessionId(session.id);
-                      void loadMessages(session.id);
-                    }}
-                  >
-                    {session.purpose} #{session.id}
-                  </Button>
-                ))}
-              </div>
-              <div className="space-y-3">
-                {messages.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">选择会话后，这里展示消息记录。</p>
-                ) : null}
-                {messages.map((message) => (
                   <div
-                    key={message.id}
-                    className="rounded-3xl border border-border bg-white p-4 text-sm leading-7 text-muted-foreground"
+                    key={session.id}
+                    className={`inline-flex items-center overflow-hidden rounded-full border ${
+                      selectedSessionId === session.id
+                        ? "border-stone-900 bg-stone-900 text-white"
+                        : "border-border bg-white text-foreground"
+                    }`}
                   >
-                    <div className="mb-2 flex items-center justify-between">
-                      <Badge variant={message.role === "assistant" ? "success" : "muted"}>
-                        {message.role}
-                      </Badge>
-                      <span className="text-xs text-muted-foreground">
-                        {formatDate(message.created_at)}
-                      </span>
-                    </div>
-                    {message.content}
+                    <button
+                      type="button"
+                      className="h-9 px-4 text-sm"
+                      onClick={() => {
+                        setSelectedSessionId(session.id);
+                        void loadMessages(session.id);
+                      }}
+                    >
+                      会话 #{session.id}
+                    </button>
+                    <button
+                      type="button"
+                      className={`flex h-9 w-9 items-center justify-center border-l ${
+                        selectedSessionId === session.id
+                          ? "border-white/20 text-white/85 hover:bg-white/10"
+                          : "border-border text-muted-foreground hover:bg-rose-50 hover:text-rose-700"
+                      } disabled:pointer-events-none disabled:opacity-40`}
+                      disabled={session.status === "active" || deletingSessionId === session.id}
+                      onClick={() => void handleDeleteSession(session.id)}
+                      title={
+                        session.status === "active"
+                          ? "会话处理中，暂时不能删除"
+                          : deletingSessionId === session.id
+                            ? "删除中"
+                            : `删除会话 #${session.id}`
+                      }
+                      aria-label={
+                        session.status === "active"
+                          ? "会话处理中，暂时不能删除"
+                          : deletingSessionId === session.id
+                            ? "删除中"
+                            : `删除会话 #${session.id}`
+                      }
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
                   </div>
                 ))}
               </div>
             </div>
-          </CardContent>
-        </Card>
 
-        <Card>
-          <CardHeader className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex items-center gap-3">
-              <CardTitle>候选标准答案</CardTitle>
-              {isPolling ? <Badge variant="warning">等待 LLM 回填</Badge> : null}
-            </div>
-            <Button variant="secondary" size="sm" onClick={() => void loadDetail()}>
-              手动刷新
-            </Button>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {candidates.length === 0 ? (
-              <div className="rounded-[28px] border border-dashed border-border bg-stone-50 p-8 text-center text-sm text-muted-foreground">
-                当前还没有候选答案。请先触发 LLM 改写，且确保 worker 正在运行。
-              </div>
-            ) : null}
-
-            {candidates.map((answer, index) => {
-              const selected = selectedCandidateId === answer.id;
-              return (
-                <div key={answer.id} className="rounded-[28px] border border-border bg-stone-50 p-4">
-                  <div className="mb-3 flex items-center justify-between gap-4">
-                    <div className="flex gap-2">
-                      <Badge variant={selected ? "success" : "muted"}>
-                        {selected ? "当前推荐" : "可选候选"}
-                      </Badge>
-                      <Badge variant={index === 0 ? "warning" : "muted"}>
-                        {answer.answer_type}
-                      </Badge>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant={selected ? "default" : "secondary"}
-                      onClick={() => setSelectedCandidateId(answer.id)}
-                    >
-                      {selected ? "已选中" : "选为推荐答案"}
-                    </Button>
+            <div className="flex-1 overflow-y-auto bg-[linear-gradient(180deg,#ffffff_0%,#fafaf9_100%)] px-6 py-5">
+              <div className="space-y-4">
+                {messages.length === 0 ? (
+                  <div className="rounded-[28px] border border-dashed border-border bg-stone-50 p-10 text-center text-sm text-muted-foreground">
+                    这里会展示专家输入和 LLM 输出。
+                    <br />
+                    你可以直接输入“这版哪里不合适”，让 LLM 继续辅助评测和改写。
                   </div>
-                  <p className="text-sm leading-7 text-muted-foreground">{answer.answer_text}</p>
-                </div>
-              );
-            })}
-            <div className="flex justify-end gap-3">
-              <Button
-                variant="secondary"
-                disabled={savingDraft}
-                onClick={() => void handleSaveDraft()}
-              >
-                {savingDraft ? "保存中…" : "暂存"}
-              </Button>
-              <Button disabled={submitting} onClick={() => void handleSubmit()}>
-                {submitting ? "提交中…" : isSubmitted ? "重新提交并覆盖" : "提交评测"}
-              </Button>
+                ) : null}
+
+                {messages.map((message) => {
+                  const messageCandidate = message.generated_answer_id
+                    ? candidates.find((answer) => answer.id === message.generated_answer_id)
+                    : null;
+                  const isMessageCandidateSelected =
+                    message.generated_answer_id !== null &&
+                    selectedCandidateId === message.generated_answer_id;
+
+                  return (
+                    <div
+                      key={message.id}
+                      className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
+                    >
+                      <div
+                        className={`max-w-[88%] rounded-[28px] border p-4 text-sm leading-7 shadow-sm ${
+                          message.role === "user"
+                            ? "border-emerald-200 bg-[linear-gradient(180deg,#ecfdf5_0%,#d1fae5_100%)] text-emerald-950"
+                            : "border-border bg-white text-muted-foreground"
+                        }`}
+                      >
+                        <div className="mb-2 flex flex-wrap items-center gap-2">
+                          <Badge variant={message.role === "user" ? "success" : "muted"}>
+                            {message.role === "user" ? "专家输入" : "LLM输出"}
+                          </Badge>
+                          {message.target_answer_id ? (
+                            <Badge variant="warning">基于答案 #{message.target_answer_id}</Badge>
+                          ) : null}
+                          {message.generated_answer_id ? (
+                            <Badge variant="success">
+                              生成候选 #{message.generated_answer_id}
+                            </Badge>
+                          ) : null}
+                          <span className="text-xs text-muted-foreground">
+                            {formatDate(message.created_at)}
+                          </span>
+                        </div>
+                        <div className="whitespace-pre-wrap">{message.content}</div>
+                        {messageCandidate ? (
+                          <div className="mt-4 rounded-[24px] border border-border bg-stone-50 p-4">
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                              <div className="flex flex-wrap gap-2">
+                                <Badge variant="success">候选答案 #{messageCandidate.id}</Badge>
+                                <Badge variant="muted">v{messageCandidate.version_no}</Badge>
+                                {messageCandidate.parent_answer_id ? (
+                                  <Badge variant="muted">
+                                    基于 #{messageCandidate.parent_answer_id}
+                                  </Badge>
+                                ) : null}
+                              </div>
+                              <Button
+                                size="sm"
+                                variant={isMessageCandidateSelected ? "default" : "secondary"}
+                                onClick={() => setSelectedCandidateId(messageCandidate.id)}
+                              >
+                                {isMessageCandidateSelected ? "当前已选中" : "选为提交答案"}
+                              </Button>
+                            </div>
+                            <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-muted-foreground">
+                              {messageCandidate.answer_text}
+                            </p>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-          </CardContent>
-        </Card>
-      </section>
+
+            <div className="border-t border-border bg-[linear-gradient(180deg,#fafaf9_0%,#f5f5f4_100%)] px-6 py-4">
+              <div className="rounded-[28px] border border-border bg-white p-4 shadow-sm">
+                <textarea
+                  ref={llmTextareaRef}
+                  className="field-textarea"
+                  placeholder="告诉 LLM 你觉得哪里还不好，例如：第二句太绝对，请改得更保守，并补充适用前提。"
+                  value={llmPrompt}
+                  onChange={(event) => setLlmPrompt(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    if (!llmBusy) {
+                      void handleLlmAssist();
+                    }
+                  }
+                }}
+                />
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                  <Button size="sm" disabled={llmBusy} onClick={() => void handleLlmAssist()}>
+                    {llmBusy ? "发送中…" : "发送给 LLM"}
+                  </Button>
+              </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

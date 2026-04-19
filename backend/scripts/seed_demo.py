@@ -45,6 +45,13 @@ EXPERTS = [
     ("expert04", "赵六"),
 ]
 
+EXPERT_BUSINESS_TAGS = {
+    "expert01": ["pest_control", "tomato", "rice"],
+    "expert02": ["farm_machinery", "corn"],
+    "expert03": ["cucumber", "pest_control"],
+    "expert04": ["farm_machinery", "tomato"],
+}
+
 QA_SEEDS = [
     {
         "external_id": "qa_demo_001",
@@ -373,6 +380,13 @@ if __name__ == "__main__":
         for code, name, description, sort_order in BUSINESS_TAGS:
             ensure_business_tag(cursor, code, name, description, sort_order)
 
+        business_tag_ids = {
+            row["code"]: row["id"]
+            for row in cursor.execute(
+                "SELECT id, code FROM business_tags WHERE is_active = 1"
+            ).fetchall()
+        }
+
         for expert_order, expert_id in enumerate(expert_ids, start=1):
             for app_name, app_id in application_ids.items():
                 cursor.execute(
@@ -382,6 +396,29 @@ if __name__ == "__main__":
                     ) VALUES (?, ?, ?, ?)
                     """,
                     (expert_id, app_id, expert_order, now_iso()),
+                )
+        for username, _name in EXPERTS:
+            expert_row = cursor.execute(
+                "SELECT id FROM users WHERE username = ?",
+                (username,),
+            ).fetchone()
+            if not expert_row:
+                continue
+            cursor.execute(
+                "DELETE FROM expert_business_tags WHERE expert_user_id = ?",
+                (expert_row["id"],),
+            )
+            for priority, tag_code in enumerate(EXPERT_BUSINESS_TAGS.get(username, []), start=1):
+                tag_id = business_tag_ids.get(tag_code)
+                if not tag_id:
+                    continue
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO expert_business_tags (
+                      expert_user_id, business_tag_id, priority, created_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (expert_row["id"], tag_id, priority, now_iso()),
                 )
 
         assigned_experts = expert_ids[:2]

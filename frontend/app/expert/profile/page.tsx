@@ -1,19 +1,16 @@
 "use client";
 
+import { useMemo } from "react";
 import { useEffect, useState } from "react";
 
-import {
-  apiFetch,
-  type ApplicationItem,
-  type MeProfile
-} from "@/lib/api";
+import { apiFetch, type ExpertTaskListItem, type MeProfile } from "@/lib/api";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function ExpertProfilePage() {
   const [profile, setProfile] = useState<MeProfile | null>(null);
-  const [applications, setApplications] = useState<ApplicationItem[]>([]);
-  const [selectedApplications, setSelectedApplications] = useState<number[]>([]);
+  const [tasks, setTasks] = useState<ExpertTaskListItem[]>([]);
   const [form, setForm] = useState({
     organization: "",
     title: "",
@@ -28,13 +25,12 @@ export default function ExpertProfilePage() {
     setLoading(true);
     setError(null);
     try {
-      const [me, applicationList] = await Promise.all([
+      const [me, taskList] = await Promise.all([
         apiFetch<MeProfile>("/api/me"),
-        apiFetch<ApplicationItem[]>("/api/applications")
+        apiFetch<ExpertTaskListItem[]>("/api/expert/tasks")
       ]);
       setProfile(me);
-      setApplications(applicationList);
-      setSelectedApplications(me.applications.map((item) => item.id));
+      setTasks(taskList);
       setForm({
         organization: me.organization ?? "",
         title: me.title ?? "",
@@ -46,6 +42,40 @@ export default function ExpertProfilePage() {
       setLoading(false);
     }
   }
+
+  const projectSummaries = useMemo(() => {
+    if (!profile) return [];
+
+    const taskStats = new Map<
+      string,
+      { total: number; pending: number; inProgress: number; submitted: number }
+    >();
+
+    for (const task of tasks) {
+      const current = taskStats.get(task.application_name) ?? {
+        total: 0,
+        pending: 0,
+        inProgress: 0,
+        submitted: 0
+      };
+      current.total += 1;
+      if (task.status === "pending") current.pending += 1;
+      if (task.status === "in_progress") current.inProgress += 1;
+      if (task.status === "submitted") current.submitted += 1;
+      taskStats.set(task.application_name, current);
+    }
+
+    return profile.applications.map((application) => ({
+      id: application.id,
+      name: application.name,
+      stats: taskStats.get(application.name) ?? {
+        total: 0,
+        pending: 0,
+        inProgress: 0,
+        submitted: 0
+      }
+    }));
+  }, [profile, tasks]);
 
   useEffect(() => {
     void loadData();
@@ -61,8 +91,7 @@ export default function ExpertProfilePage() {
         body: JSON.stringify({
           organization: form.organization || null,
           title: form.title || null,
-          bio: form.bio || null,
-          application_ids: selectedApplications
+          bio: form.bio || null
         })
       });
       setNotice("资料已更新。");
@@ -78,7 +107,7 @@ export default function ExpertProfilePage() {
     <div className="space-y-6">
       <div>
         <p className="text-sm text-muted-foreground">我的资料</p>
-        <h2 className="mt-2 font-serif text-4xl">维护擅长应用与个人简介</h2>
+        <h2 className="mt-2 font-serif text-4xl">维护领域场景与个人简介</h2>
       </div>
       <Card>
         <CardHeader>
@@ -114,29 +143,58 @@ export default function ExpertProfilePage() {
             disabled={loading}
           />
           <div className="rounded-3xl border border-border bg-stone-50 p-4 md:col-span-2">
-            <p className="mb-3 text-sm font-medium">擅长应用</p>
-            <div className="flex flex-wrap gap-2">
-              {applications.map((application) => {
-                const selected = selectedApplications.includes(application.id);
-                return (
-                  <Button
-                    key={application.id}
-                    size="sm"
-                    variant={selected ? "default" : "secondary"}
-                    disabled={loading}
-                    onClick={() =>
-                      setSelectedApplications((current) =>
-                        selected
-                          ? current.filter((id) => id !== application.id)
-                          : [...current, application.id]
-                      )
-                    }
-                  >
-                    {application.name}
-                  </Button>
-                );
-              })}
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <p className="text-sm font-medium">当前项目与任务分布</p>
+              <p className="text-xs text-muted-foreground">
+                共 {projectSummaries.length} 个项目 / {tasks.length} 条任务
+              </p>
             </div>
+            <div className="space-y-3">
+              {projectSummaries.length ? (
+                projectSummaries.map((project) => (
+                  <div
+                    key={project.id}
+                    className="flex flex-col gap-2 rounded-2xl border border-border/80 bg-white/80 px-4 py-3 lg:flex-row lg:items-center lg:justify-between"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{project.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        已分配 {project.stats.total} 条任务
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant="muted">待处理 {project.stats.pending}</Badge>
+                      <Badge variant="default">处理中 {project.stats.inProgress}</Badge>
+                      <Badge variant="success">已提交 {project.stats.submitted}</Badge>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p className="text-sm text-muted-foreground">当前还没有分配项目。</p>
+              )}
+            </div>
+          </div>
+          <div className="rounded-3xl border border-border bg-stone-50 p-4 md:col-span-2">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <p className="text-sm font-medium">领域场景</p>
+              <Badge variant={profile?.allow_cross_business_review ? "warning" : "muted"}>
+                {profile?.allow_cross_business_review ? "允许跨领域评审" : "仅限本领域评审"}
+              </Badge>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {profile?.business_tags.length ? (
+                profile.business_tags.map((businessTag) => (
+                  <Badge key={businessTag.id} variant="muted" className="px-3 py-1">
+                    {businessTag.name}
+                  </Badge>
+                ))
+              ) : (
+                <p className="text-sm text-muted-foreground">当前尚未配置领域场景，由管理员维护。</p>
+              )}
+            </div>
+            <p className="mt-3 text-xs text-muted-foreground">
+              领域场景与跨领域评审权限由管理员在专家管理中统一配置，专家端仅展示当前设置。
+            </p>
           </div>
           <textarea
             className="field-textarea md:col-span-2"

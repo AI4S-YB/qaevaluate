@@ -11,6 +11,14 @@ from typing import Dict, Optional
 
 from .config import EXPORT_DIR, QUEUE_DIR
 from .db import db_cursor, init_db
+from .llm_client import (
+    LlmClientError,
+    build_task_messages,
+    call_openai_compatible_chat,
+    format_review_message,
+    parse_review_response,
+)
+from .llm_config_store import get_llm_api_key
 
 
 def now_iso() -> str:
@@ -26,6 +34,68 @@ def save_json(path: Path, payload: dict) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def parse_business_tag_codes(value: Optional[str]) -> set[str]:
+    if not value:
+        return set()
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return set()
+    if not isinstance(parsed, list):
+        return set()
+    return {str(item) for item in parsed if isinstance(item, str) and item}
+
+
+def normalize_answer_text(value: str) -> str:
+    return " ".join(value.split()).strip()
+
+
+def expert_can_review_business_tags(
+    qa_business_tags: set[str],
+    allow_cross_business_review: bool,
+    expert_business_tags: set[str],
+) -> bool:
+    if allow_cross_business_review:
+        return True
+    if not qa_business_tags:
+        return True
+    return bool(qa_business_tags & expert_business_tags)
+
+
+def load_application_experts(cursor, application_id: int) -> dict[int, dict]:
+    rows = cursor.execute(
+        """
+        SELECT
+          u.id,
+          u.allow_cross_business_review,
+          b.code AS business_tag_code
+        FROM users u
+        JOIN expert_applications ea ON ea.expert_user_id = u.id
+        LEFT JOIN expert_business_tags ebt ON ebt.expert_user_id = u.id
+        LEFT JOIN business_tags b ON b.id = ebt.business_tag_id
+        WHERE u.role = 'expert'
+          AND u.status = 'approved'
+          AND ea.application_id = ?
+        ORDER BY u.id ASC, ebt.priority ASC, b.name ASC
+        """,
+        (application_id,),
+    ).fetchall()
+
+    experts: dict[int, dict] = {}
+    for row in rows:
+        expert = experts.setdefault(
+            row["id"],
+            {
+                "id": row["id"],
+                "allow_cross_business_review": bool(row["allow_cross_business_review"]),
+                "business_tags": set(),
+            },
+        )
+        if row["business_tag_code"]:
+            expert["business_tags"].add(row["business_tag_code"])
+    return experts
 
 
 def move_job(path: Path, target_dir: str) -> Path:
@@ -44,31 +114,32 @@ def get_next_job() -> Optional[Path]:
     return jobs[0]
 
 
-def ensure_application(cursor, name: str) -> int:
-    row = cursor.execute(
-        "SELECT id FROM applications WHERE name = ?",
-        (name,),
-    ).fetchone()
-    if row:
-        return row["id"]
-    cursor.execute(
-        """
-        INSERT INTO applications (name, description, is_active, created_at)
-        VALUES (?, '', 1, ?)
-        """,
-        (name, now_iso()),
-    )
-    return int(cursor.lastrowid)
-
-
 def import_batch(batch_id: int) -> None:
     with db_cursor() as cursor:
         batch = cursor.execute(
-            "SELECT id, file_path FROM dataset_batches WHERE id = ?",
+            """
+            SELECT
+              b.id,
+              b.file_path,
+              b.application_id,
+              b.business_tags_json,
+              a.name AS application_name,
+              tt.id AS technical_type_id,
+              tt.code AS technical_type_code
+            FROM dataset_batches b
+            LEFT JOIN applications a ON a.id = b.application_id
+            LEFT JOIN technical_types tt ON tt.id = b.technical_type_id
+            WHERE b.id = ?
+            """,
             (batch_id,),
         ).fetchone()
         if not batch:
             raise ValueError(f"batch {batch_id} not found")
+        if not batch["application_id"] or not batch["application_name"]:
+            raise ValueError("batch application not configured")
+        if not batch["technical_type_id"] or not batch["technical_type_code"]:
+            raise ValueError("batch technical_type not configured")
+        batch_business_tags = parse_business_tag_codes(batch["business_tags_json"])
         rows = json.loads(Path(batch["file_path"]).read_text(encoding="utf-8"))
         if not isinstance(rows, list):
             raise ValueError("import file must be a JSON array")
@@ -85,43 +156,12 @@ def import_batch(batch_id: int) -> None:
             try:
                 if not isinstance(item, dict):
                     raise ValueError("row must be a JSON object")
-                application_name = item["application"]
-                technical_type_code = item["technical_type"]
-                business_tags = item.get("business_tags", [])
                 question = item["question"]
                 answer = item.get("answer")
                 if not answer and item.get("candidate_answers"):
                     answer = item["candidate_answers"][0]["answer"]
                 if not answer:
                     raise ValueError("missing answer")
-                if not isinstance(business_tags, list):
-                    raise ValueError("business_tags must be an array")
-
-                application_id = ensure_application(cursor, application_name)
-                technical_type = cursor.execute(
-                    """
-                    SELECT id
-                    FROM technical_types
-                    WHERE code = ? AND is_active = 1
-                    """,
-                    (technical_type_code,),
-                ).fetchone()
-                if not technical_type:
-                    raise ValueError(f"technical_type not found: {technical_type_code}")
-
-                if business_tags:
-                    tag_rows = cursor.execute(
-                        f"""
-                        SELECT code
-                        FROM business_tags
-                        WHERE code IN ({",".join("?" for _ in business_tags)}) AND is_active = 1
-                        """,
-                        tuple(business_tags),
-                    ).fetchall()
-                    found_codes = {row["code"] for row in tag_rows}
-                    missing_codes = [code for code in business_tags if code not in found_codes]
-                    if missing_codes:
-                        raise ValueError(f"business_tag not found: {missing_codes[0]}")
 
                 cursor.execute(
                     """
@@ -133,13 +173,13 @@ def import_batch(batch_id: int) -> None:
                     """,
                     (
                         item.get("id"),
-                        technical_type["id"],
-                        json.dumps(business_tags, ensure_ascii=False),
-                        application_id,
+                        batch["technical_type_id"],
+                        json.dumps(sorted(batch_business_tags), ensure_ascii=False),
+                        batch["application_id"],
                         batch_id,
                         question,
                         item.get("context"),
-                        json.dumps(business_tags, ensure_ascii=False),
+                        json.dumps(sorted(batch_business_tags), ensure_ascii=False),
                         item.get("difficulty"),
                         item.get("source"),
                         now_iso(),
@@ -202,25 +242,13 @@ def import_batch(batch_id: int) -> None:
 
 def dispatch_tasks(application_id: int, limit: int) -> None:
     with db_cursor() as cursor:
-        experts = cursor.execute(
-            """
-            SELECT DISTINCT u.id
-            FROM users u
-            JOIN expert_applications ea ON ea.expert_user_id = u.id
-            WHERE u.role = 'expert'
-              AND u.status = 'approved'
-              AND ea.application_id = ?
-            ORDER BY u.id ASC
-            """,
-            (application_id,),
-        ).fetchall()
-        expert_ids = [row["id"] for row in experts]
-        if len(expert_ids) < 2:
+        experts = load_application_experts(cursor, application_id)
+        if len(experts) < 2:
             return
 
         answers = cursor.execute(
             """
-            SELECT ans.id, ans.qa_item_id
+            SELECT ans.id, ans.qa_item_id, q.business_tags_json
             FROM qa_answers ans
             JOIN qa_items q ON q.id = ans.qa_item_id
             WHERE q.application_id = ?
@@ -233,6 +261,41 @@ def dispatch_tasks(application_id: int, limit: int) -> None:
         ).fetchall()
 
         for answer in answers:
+            qa_business_tags = parse_business_tag_codes(answer["business_tags_json"])
+            eligible_expert_ids = [
+                expert_id
+                for expert_id, expert in experts.items()
+                if expert_can_review_business_tags(
+                    qa_business_tags,
+                    expert["allow_cross_business_review"],
+                    expert["business_tags"],
+                )
+            ]
+            if len(eligible_expert_ids) < 2:
+                continue
+
+            existing_expert_rows = cursor.execute(
+                """
+                SELECT expert_user_id
+                FROM evaluation_tasks
+                WHERE answer_id = ?
+                  AND task_type = 'initial_review'
+                ORDER BY expert_user_id ASC
+                """,
+                (answer["id"],),
+            ).fetchall()
+            abandoned_rows = cursor.execute(
+                """
+                SELECT expert_user_id
+                FROM expert_task_abandons
+                WHERE answer_id = ?
+                  AND task_type = 'initial_review'
+                ORDER BY expert_user_id ASC
+                """,
+                (answer["id"],),
+            ).fetchall()
+            existing_expert_ids = {row["expert_user_id"] for row in existing_expert_rows}
+            existing_expert_ids.update(row["expert_user_id"] for row in abandoned_rows)
             existing = cursor.execute(
                 """
                 SELECT COUNT(*) AS count
@@ -245,7 +308,10 @@ def dispatch_tasks(application_id: int, limit: int) -> None:
             if existing["count"] >= 2:
                 continue
 
-            for expert_id in expert_ids[:2]:
+            assigned_count = existing["count"]
+            for expert_id in eligible_expert_ids:
+                if expert_id in existing_expert_ids:
+                    continue
                 cursor.execute(
                     """
                     INSERT OR IGNORE INTO evaluation_tasks (
@@ -255,6 +321,9 @@ def dispatch_tasks(application_id: int, limit: int) -> None:
                     """,
                     (answer["qa_item_id"], answer["id"], expert_id, now_iso()),
                 )
+                assigned_count += 1
+                if assigned_count >= 2:
+                    break
             cursor.execute(
                 "UPDATE qa_items SET status = 'in_review' WHERE id = ?",
                 (answer["qa_item_id"],),
@@ -359,26 +428,38 @@ def aggregate_answer(qa_item_id: int, answer_id: int) -> None:
         ) / len(records)
 
         if final_decision == "pending" and len(records) == 2:
-            third_expert = cursor.execute(
+            qa_item = cursor.execute(
                 """
-                SELECT DISTINCT u.id
-                FROM users u
-                JOIN expert_applications ea ON ea.expert_user_id = u.id
-                JOIN qa_items q ON q.application_id = ea.application_id
-                WHERE q.id = ?
-                  AND u.role = 'expert'
-                  AND u.status = 'approved'
-                  AND u.id NOT IN (
-                    SELECT expert_user_id
-                    FROM evaluation_tasks
-                    WHERE answer_id = ?
-                  )
-                ORDER BY u.id ASC
-                LIMIT 1
+                SELECT application_id, business_tags_json
+                FROM qa_items
+                WHERE id = ?
                 """,
-                (qa_item_id, answer_id),
+                (qa_item_id,),
             ).fetchone()
-            if third_expert:
+            assigned_experts = cursor.execute(
+                """
+                SELECT expert_user_id
+                FROM evaluation_tasks
+                WHERE answer_id = ?
+                """,
+                (answer_id,),
+            ).fetchall()
+            excluded_expert_ids = {row["expert_user_id"] for row in assigned_experts}
+            third_expert_id = None
+            if qa_item:
+                qa_business_tags = parse_business_tag_codes(qa_item["business_tags_json"])
+                experts = load_application_experts(cursor, qa_item["application_id"])
+                for expert_id, expert in experts.items():
+                    if expert_id in excluded_expert_ids:
+                        continue
+                    if expert_can_review_business_tags(
+                        qa_business_tags,
+                        expert["allow_cross_business_review"],
+                        expert["business_tags"],
+                    ):
+                        third_expert_id = expert_id
+                        break
+            if third_expert_id is not None:
                 cursor.execute(
                     """
                     INSERT OR IGNORE INTO evaluation_tasks (
@@ -386,7 +467,7 @@ def aggregate_answer(qa_item_id: int, answer_id: int) -> None:
                       task_type, status, assigned_at
                     ) VALUES (?, ?, ?, 2, 'dispute_review', 'pending', ?)
                     """,
-                    (qa_item_id, answer_id, third_expert["id"], now_iso()),
+                    (qa_item_id, answer_id, third_expert_id, now_iso()),
                 )
 
         cursor.execute(
@@ -740,53 +821,121 @@ def handle_llm(
     action: str,
     prompt: Optional[str],
     mode: Optional[str],
+    target_answer_id: Optional[int],
+    score_context: Optional[dict],
 ) -> None:
     with db_cursor() as cursor:
         task = cursor.execute(
             """
-            SELECT t.id, t.qa_item_id, t.answer_id, q.question_text, ans.answer_text
+            SELECT
+              t.id,
+              t.qa_item_id,
+              t.answer_id,
+              q.question_text,
+              q.context_text,
+              tt.code AS technical_type_code
             FROM evaluation_tasks t
             JOIN qa_items q ON q.id = t.qa_item_id
-            JOIN qa_answers ans ON ans.id = t.answer_id
+            LEFT JOIN technical_types tt ON tt.id = q.technical_type_id
             WHERE t.id = ?
             """,
             (task_id,),
         ).fetchone()
         if not task:
             raise ValueError(f"task {task_id} not found")
+        selected_answer_id = target_answer_id or task["answer_id"]
+        selected_answer = cursor.execute(
+            """
+            SELECT id, answer_text, version_no
+            FROM qa_answers
+            WHERE id = ? AND qa_item_id = ?
+            """,
+            (selected_answer_id, task["qa_item_id"]),
+        ).fetchone()
+        if not selected_answer:
+            raise ValueError(f"answer {selected_answer_id} not found for task {task_id}")
+        conversation_history = cursor.execute(
+            """
+            SELECT role, content
+            FROM llm_messages
+            WHERE session_id = ?
+            ORDER BY id ASC
+            """,
+            (session_id,),
+        ).fetchall()
 
-        if action == "rewrite":
-            candidate_text = (
-                "建议采用更完整、更保守的标准答案："
-                f"{task['answer_text']} 请结合发病初期处理、环境管理和规范用药给出答复。"
-            )
+        llm_config = cursor.execute(
+            """
+            SELECT id, name, provider_type, base_url, api_key, model_name, system_prompt, temperature
+            FROM llm_configs
+            WHERE is_active = 1
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if not llm_config:
+            raise LlmClientError("no active llm config")
+        api_key = get_llm_api_key(int(llm_config["id"]), llm_config["api_key"])
+        if not api_key:
+            raise LlmClientError("active llm config missing api key in local secrets")
+
+        messages = build_task_messages(
+            action=action,
+            question_text=task["question_text"],
+            context_text=task["context_text"],
+            answer_text=selected_answer["answer_text"],
+            technical_type_code=task["technical_type_code"],
+            score_context=score_context,
+            conversation_history=[dict(row) for row in conversation_history],
+            system_prompt=llm_config["system_prompt"],
+        )
+
+        if llm_config["provider_type"] != "openai_compatible":
+            raise LlmClientError(f"unsupported provider: {llm_config['provider_type']}")
+
+        assistant_text = call_openai_compatible_chat(
+            base_url=llm_config["base_url"],
+            api_key=api_key,
+            model_name=llm_config["model_name"],
+            messages=messages,
+            temperature=float(llm_config["temperature"]),
+        )
+
+        review = parse_review_response(assistant_text)
+        candidate_answer_id = None
+        revised_answer = review["revised_answer"]
+        if normalize_answer_text(revised_answer):
             cursor.execute(
                 """
                 INSERT INTO qa_answers (
                   qa_item_id, answer_text, answer_type, source_model,
                   source_user_id, parent_answer_id, version_no, is_current, created_at
-                ) VALUES (?, ?, 'llm_generated_candidate', 'demo-llm', NULL, ?, 2, 0, ?)
+                ) VALUES (?, ?, 'llm_generated_candidate', ?, NULL, ?, ?, 0, ?)
                 """,
                 (
                     task["qa_item_id"],
-                    candidate_text,
-                    task["answer_id"],
+                    revised_answer,
+                    f"{llm_config['name']} / {llm_config['model_name']} / session#{session_id}",
+                    selected_answer["id"],
+                    int(selected_answer["version_no"] or 1) + 1,
                     now_iso(),
                 ),
             )
-            answer_note = "已生成 1 条候选标准答案，可由专家确认。"
-        else:
-            answer_note = (
-                f"LLM {action} 结果：问题“{task['question_text']}”的当前答案建议结合用户提示继续核查。"
-            )
+            candidate_answer_id = int(cursor.lastrowid)
+        answer_note = format_review_message(review, candidate_answer_id)
         cursor.execute(
             """
-            INSERT INTO llm_messages (session_id, role, content, created_at)
-            VALUES (?, 'assistant', ?, ?)
+            INSERT INTO llm_messages (
+              session_id, role, content, target_answer_id, generated_answer_id, review_json, created_at
+            )
+            VALUES (?, 'assistant', ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
-                f"{answer_note} mode={mode or '-'} prompt={prompt or '-'}",
+                answer_note,
+                selected_answer["id"],
+                candidate_answer_id,
+                json.dumps(review, ensure_ascii=False),
                 now_iso(),
             ),
         )
@@ -828,6 +977,8 @@ def process_job(job_path: Path) -> None:
                 str(payload.get("action", "compare")),
                 payload.get("prompt"),
                 payload.get("mode"),
+                payload.get("target_answer_id"),
+                payload.get("score_context"),
             )
         elif job_type == "export":
             export_dataset(int(payload["export_job_id"]))
@@ -850,6 +1001,30 @@ def process_job(job_path: Path) -> None:
         failed_path = move_job(processing_path, "failed")
         failed_log = failed_path.with_suffix(".error.txt")
         failed_log.write_text(str(exc), encoding="utf-8")
+        if job_type == "llm" and payload.get("session_id") is not None:
+            with db_cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE llm_sessions
+                    SET status = 'failed'
+                    WHERE id = ?
+                    """,
+                    (int(payload["session_id"]),),
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO llm_messages (
+                      session_id, role, content, target_answer_id, created_at
+                    )
+                    VALUES (?, 'assistant', ?, ?, ?)
+                    """,
+                    (
+                        int(payload["session_id"]),
+                        f"LLM 调用失败：{str(exc)}",
+                        payload.get("target_answer_id"),
+                        now_iso(),
+                    ),
+                )
         if job_type == "export" and payload.get("export_job_id") is not None:
             with db_cursor() as cursor:
                 cursor.execute(
