@@ -78,6 +78,31 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now qaevaluate-backend qaevaluate-worker qaevaluate-frontend
 ```
 
+## 备份与恢复
+
+建议定期备份 `SQLite` 数据库，尤其是生产环境。
+
+备份：
+
+```bash
+./scripts/backup-db.sh production
+```
+
+也可以指定输出文件：
+
+```bash
+./scripts/backup-db.sh production /srv/qaevaluate/backups/app-prod-latest.sqlite3
+```
+
+恢复前建议先停掉后端和 worker：
+
+```bash
+./scripts/stop.sh
+./scripts/restore-db.sh production /srv/qaevaluate/backups/app-prod-latest.sqlite3
+```
+
+恢复脚本会在覆盖前自动为当前数据库再生成一份 `pre-restore` 快照。
+
 ## 环境隔离
 
 系统通过 `QAEVALUATE_ENV` 区分开发和生产环境。
