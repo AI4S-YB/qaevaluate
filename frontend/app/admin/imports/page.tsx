@@ -32,6 +32,44 @@ function parseBusinessTags(value: string | null) {
   }
 }
 
+const importExamples = {
+  direct_qa: {
+    title: "普通QA示例",
+    filename: "qa-import-example-direct.json",
+    content: JSON.stringify(
+      [
+        {
+          id: "qa_001",
+          question: "番茄晚疫病如何防治？",
+          answer:
+            "番茄晚疫病应以预防为主、综合防治为核心。首先应清除病残体并与非茄科作物轮作2至3年，以减少田间病原基数。连续阴雨条件下，要控制田间湿度，建议采用高畦栽培、合理密植和及时整枝打杈，使叶面露水尽量在上午10点前散去。发病初期可每7天左右喷施一次保护性或治疗性杀菌剂，如代森锰锌、百菌清或氟吡菌胺类药剂，并注意不同作用机制药剂轮换，以降低抗药性风险。其原理在于降低叶面持续湿润时间可抑制病菌孢子萌发，而轮换用药可减少单一药剂长期使用带来的选择压力。",
+          context: "露地栽培，近期连续阴雨。"
+        }
+      ],
+      null,
+      2
+    )
+  },
+  cot_qa: {
+    title: "CoT示例",
+    filename: "qa-import-example-cot.json",
+    content: JSON.stringify(
+      [
+        {
+          id: "cot_001",
+          question:
+            "番茄大棚夜间湿度长期高于90%，近三天出现下部叶片水渍状病斑，且预报未来一周仍有阴雨天气。请判断最优先采取的防控策略，并说明原因。",
+          answer:
+            "最优先的策略是先迅速降低棚内叶面持续结露时间，同时立即启动针对晚疫病的保护加治疗联合防控。推理过程如下：第一，夜间湿度长期高于90%且出现水渍状病斑，说明病害发生条件已经满足，并且很可能进入初侵染到扩展阶段；如果此时只喷药而不控湿，病原仍会在高湿条件下继续萌发传播。第二，未来一周仍有阴雨，环境风险不会自然解除，因此应优先通过清晨短时放风、增设循环风机、减少傍晚灌溉、清理下部老叶等方式，把叶面连续湿润时间尽量压到8小时以下。第三，在控湿的同时，于24小时内喷施保护性与治疗性药剂组合，并在5至7天后依据病情复喷。这样做的原理是先切断病原继续扩展所依赖的高湿环境，再用药剂压低现有侵染强度，从而同时控制病害速度和后续损失。",
+          context: "设施栽培，目标是给种植技术员做现场决策参考。"
+        }
+      ],
+      null,
+      2
+    )
+  }
+} as const;
+
 function classifyImportError(message: string) {
   if (message.includes("technical_type not found")) {
     return {
@@ -88,6 +126,7 @@ export default function AdminImportsPage() {
   const [file, setFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [parsingId, setParsingId] = useState<number | null>(null);
+  const [openExampleKey, setOpenExampleKey] = useState<keyof typeof importExamples | null>(null);
 
   async function loadBatches() {
     setLoading(true);
@@ -208,6 +247,20 @@ export default function AdminImportsPage() {
   const selectedFailureCategory = selectedFailure
     ? classifyImportError(selectedFailure.error_message)
     : null;
+  const openExample = openExampleKey ? importExamples[openExampleKey] : null;
+
+  function handleDownloadExample(exampleKey: keyof typeof importExamples) {
+    const example = importExamples[exampleKey];
+    const blob = new Blob([example.content], { type: "application/json;charset=utf-8" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = example.filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  }
 
   return (
     <div className="space-y-6">
@@ -215,7 +268,7 @@ export default function AdminImportsPage() {
         <p className="text-sm text-muted-foreground">数据导入</p>
         <h2 className="mt-2 font-serif text-4xl">上传 JSON，并在导入入口就锁定 QA 类型与领域场景</h2>
       </div>
-      <section className="grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
+      <section>
         <Card>
           <CardHeader>
             <CardTitle>导入字段规范</CardTitle>
@@ -224,6 +277,23 @@ export default function AdminImportsPage() {
             <div className="rounded-[28px] border border-border bg-stone-50 p-5 text-sm leading-7 text-muted-foreground">
               每条记录至少应包含 `question`、`answer`。项目、QA 类型与领域场景都在上传批次时统一指定，
               不再要求每条记录自己携带 `application`、`technical_type` 或 `business_tags`。
+            </div>
+            <div className="flex flex-wrap items-center gap-3 rounded-[28px] border border-border bg-white p-4">
+              <span className="text-sm text-muted-foreground">导入示例：</span>
+              <button
+                type="button"
+                className="text-sm font-medium text-emerald-700 underline decoration-emerald-200 underline-offset-4"
+                onClick={() => setOpenExampleKey("direct_qa")}
+              >
+                普通QA示例
+              </button>
+              <button
+                type="button"
+                className="text-sm font-medium text-emerald-700 underline decoration-emerald-200 underline-offset-4"
+                onClick={() => setOpenExampleKey("cot_qa")}
+              >
+                CoT示例
+              </button>
             </div>
             <pre className="overflow-x-auto rounded-3xl border border-border bg-white p-4 text-xs leading-6 text-muted-foreground">
 {`[
@@ -537,6 +607,36 @@ export default function AdminImportsPage() {
           </CardContent>
         </Card>
       </section>
+
+      {openExample ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/40 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-[32px] border border-border bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-border px-6 py-4">
+              <div>
+                <p className="text-sm text-muted-foreground">导入示例</p>
+                <h3 className="text-xl font-semibold text-foreground">{openExample.title}</h3>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => handleDownloadExample(openExampleKey!)}
+                >
+                  下载示例
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => setOpenExampleKey(null)}>
+                  关闭
+                </Button>
+              </div>
+            </div>
+            <div className="overflow-y-auto px-6 py-5">
+              <pre className="overflow-x-auto rounded-3xl border border-border bg-stone-50 p-5 text-xs leading-6 text-muted-foreground">
+                {openExample.content}
+              </pre>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
