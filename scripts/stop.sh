@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+load_env_file() {
+  local env_file="$1"
+  if [[ -f "$env_file" ]]; then
+    set -a
+    source "$env_file"
+    set +a
+  fi
+}
+
+load_env_file "$ROOT_DIR/.env"
+load_env_file "$ROOT_DIR/.env.development"
+load_env_file "$ROOT_DIR/.env.development.local"
+load_env_file "$ROOT_DIR/.env.production"
+load_env_file "$ROOT_DIR/.env.production.local"
+
 BACKEND_PORT="${BACKEND_PORT:-8100}"
 FRONTEND_PORT="${FRONTEND_PORT:-3100}"
 

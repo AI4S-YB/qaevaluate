@@ -2,6 +2,11 @@
 docs/
 __pycache__/
 *.pyc
+.env
+.env.*
+!.env.example
+!.env.development.example
+!.env.production.example
 node_modules/
 .next/
 .next-dev/

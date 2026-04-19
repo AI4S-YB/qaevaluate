@@ -84,6 +84,20 @@ data/
 - `QAEVALUATE_RUNTIME_DIR`
 - `QAEVALUATE_BACKEND_DATA_DIR`
 
+环境文件建议：
+
+- 通用模板：`/.env.example`
+- 开发模板：`/.env.development.example`
+- 生产模板：`/.env.production.example`
+- 本地实际配置建议使用：
+  - `/.env.development.local`
+  - `/.env.production.local`
+
+启动脚本会自动加载：
+
+- 开发脚本：`.env` -> `.env.development` -> `.env.development.local`
+- 生产脚本：`.env` -> `.env.production` -> `.env.production.local`
+
 ## 本地启动
 
 ### 一键启动
@@ -91,12 +105,14 @@ data/
 开发模式：
 
 ```bash
+cp .env.development.example .env.development.local
 ./scripts/start-dev.sh
 ```
 
 生产模式：
 
 ```bash
+cp .env.production.example .env.production.local
 ./scripts/start-prod.sh
 ```
 
@@ -111,7 +127,10 @@ data/
 - 开发模式会同时启动后端 API、worker 和前端开发服务器
 - 生产模式会先构建前端，再启动后端 API、worker 和前端生产服务
 - 默认端口固定为：前端 `3100`，后端 `8100`
+- 默认主机为：开发环境 `127.0.0.1`，生产环境 `0.0.0.0`
 - 开发和生产默认不会共用同一个 SQLite 文件
+- 如果存在对应的 `.env.*` 文件，启动脚本会自动加载
+- 如果通过 `.env.*` 覆盖主机或端口，启动脚本会按覆盖值启动前后端服务
 
 ### 1. 启动后端
 

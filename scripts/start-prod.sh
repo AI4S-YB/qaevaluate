@@ -5,6 +5,19 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_DIR="$ROOT_DIR/backend"
 FRONTEND_DIR="$ROOT_DIR/frontend"
 
+load_env_file() {
+  local env_file="$1"
+  if [[ -f "$env_file" ]]; then
+    set -a
+    source "$env_file"
+    set +a
+  fi
+}
+
+load_env_file "$ROOT_DIR/.env"
+load_env_file "$ROOT_DIR/.env.production"
+load_env_file "$ROOT_DIR/.env.production.local"
+
 BACKEND_HOST="${BACKEND_HOST:-0.0.0.0}"
 BACKEND_PORT="${BACKEND_PORT:-8100}"
 FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
@@ -63,13 +76,13 @@ WORKER_PID=$!
 echo "starting frontend in production mode on $FRONTEND_HOST:$FRONTEND_PORT"
 (
   cd "$FRONTEND_DIR"
-  exec npm run start
+  exec npx next start -p "$FRONTEND_PORT" -H "$FRONTEND_HOST"
 ) &
 FRONTEND_PID=$!
 
 echo "production services started"
 echo "env:      $QAEVALUATE_ENV"
-echo "frontend: http://127.0.0.1:$FRONTEND_PORT"
+echo "frontend: http://$FRONTEND_HOST:$FRONTEND_PORT"
 echo "backend:  http://127.0.0.1:$BACKEND_PORT"
 echo "swagger:  http://127.0.0.1:$BACKEND_PORT/docs"
 
