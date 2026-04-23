@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from ..auth import CurrentUser, require_admin
 from ..config import APP_ENV, DB_PATH, EXPORT_DIR, QUEUE_DIR, RUNTIME_DATA_DIR, UPLOAD_DIR
 from ..db import db_cursor
-from ..jobs import queue_job
+from ..jobs import queue_job, queue_unique_import_job
 from ..llm_client import LlmClientError, call_openai_compatible_chat
 from ..llm_config_store import get_llm_api_key, mask_api_key, set_llm_api_key
 from ..worker import get_next_job, process_job
@@ -89,10 +89,44 @@ class LlmConfigPayload(BaseModel):
     temperature: float = 0.2
     is_enabled: bool = True
     is_active: bool = False
+    is_trial_enabled: bool = False
 
 
 class LlmConfigEnablePayload(BaseModel):
     is_enabled: bool
+
+
+class LlmConfigTrialEnablePayload(BaseModel):
+    is_trial_enabled: bool
+
+
+LLM_USE_CASE_EVALUATION = "evaluation"
+LLM_USE_CASE_TRIAL = "trial"
+
+
+class ImportCandidateAnswerPayload(BaseModel):
+    answer: str
+
+
+class ImportRowPayload(BaseModel):
+    id: Optional[str] = None
+    question: str
+    answer: Optional[str] = None
+    context: Optional[str] = None
+    difficulty: Optional[str] = None
+    source: Optional[str] = None
+    model: Optional[str] = None
+    candidate_answers: list[ImportCandidateAnswerPayload] = Field(default_factory=list)
+
+
+class ImportPushPayload(BaseModel):
+    name: str = "default-batch"
+    source: str = "remote-sync"
+    application_id: int
+    technical_type_code: str
+    business_tag_codes: list[str] = Field(default_factory=list)
+    rows: list[ImportRowPayload] = Field(default_factory=list)
+    auto_parse: bool = True
 
 
 def queue_file(path: Path) -> dict:
@@ -160,9 +194,141 @@ def serialize_llm_config(row) -> dict:
     api_key = get_llm_api_key(item["id"], fallback_api_key)
     item["is_enabled"] = bool(item["is_enabled"])
     item["is_active"] = bool(item["is_active"])
+    item["llm_use_case"] = item.get("llm_use_case") or (
+        LLM_USE_CASE_TRIAL if bool(item.get("is_trial_enabled")) else LLM_USE_CASE_EVALUATION
+    )
+    item["is_trial_enabled"] = item["llm_use_case"] == LLM_USE_CASE_TRIAL
     item["api_key_masked"] = mask_api_key(api_key)
     item["has_api_key"] = bool(api_key)
     return item
+
+
+def get_llm_query_params(use_case: str) -> tuple[str, tuple[object, ...]]:
+    if use_case == LLM_USE_CASE_TRIAL:
+        return "WHERE llm_use_case = ?", (LLM_USE_CASE_TRIAL,)
+    return "WHERE llm_use_case = ?", (LLM_USE_CASE_EVALUATION,)
+
+
+def normalize_llm_payload(payload: LlmConfigPayload, use_case: str) -> dict:
+    provider_code = payload.provider_code.strip() or "custom_openai"
+    provider_type = payload.provider_type
+    is_enabled = bool(payload.is_enabled)
+    is_active = bool(payload.is_active)
+    if use_case == LLM_USE_CASE_TRIAL:
+        provider_code = "custom_openai"
+        provider_type = "openai_compatible"
+        is_active = False
+        is_enabled = True if payload.is_enabled else False
+    else:
+        is_enabled = payload.is_enabled or is_active
+    return {
+        "name": payload.name.strip(),
+        "provider_code": provider_code,
+        "provider_type": provider_type,
+        "base_url": payload.base_url.strip(),
+        "api_key": payload.api_key.strip(),
+        "model_name": payload.model_name.strip(),
+        "system_prompt": payload.system_prompt,
+        "temperature": payload.temperature,
+        "is_enabled": is_enabled,
+        "is_active": is_active,
+        "llm_use_case": use_case,
+    }
+
+
+def parse_import_business_tags(value: str) -> list[str]:
+    try:
+        business_tags = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="business_tags_json must be valid json") from exc
+    if not isinstance(business_tags, list) or not all(isinstance(item, str) for item in business_tags):
+        raise HTTPException(status_code=400, detail="business_tags_json must be an array of strings")
+    return business_tags
+
+
+def validate_import_target(
+    application_id: int,
+    technical_type_code: str,
+    business_tags: list[str],
+) -> tuple[int, int]:
+    with db_cursor() as cursor:
+        application = cursor.execute(
+            """
+            SELECT id
+            FROM applications
+            WHERE id = ? AND is_active = 1
+            """,
+            (application_id,),
+        ).fetchone()
+        if not application:
+            raise HTTPException(status_code=400, detail=f"application not found: {application_id}")
+        technical_type = cursor.execute(
+            """
+            SELECT id
+            FROM technical_types
+            WHERE code = ? AND is_active = 1
+            """,
+            (technical_type_code,),
+        ).fetchone()
+        if not technical_type:
+            raise HTTPException(status_code=400, detail=f"technical_type not found: {technical_type_code}")
+        if business_tags:
+            tag_rows = cursor.execute(
+                f"""
+                SELECT code
+                FROM business_tags
+                WHERE code IN ({",".join("?" for _ in business_tags)}) AND is_active = 1
+                """,
+                tuple(business_tags),
+            ).fetchall()
+            found_codes = {row["code"] for row in tag_rows}
+            missing_codes = [code for code in business_tags if code not in found_codes]
+            if missing_codes:
+                raise HTTPException(status_code=400, detail=f"business_tag not found: {missing_codes[0]}")
+        return int(application["id"]), int(technical_type["id"])
+
+
+def create_dataset_batch(
+    *,
+    name: str,
+    source: str,
+    file_path: Path,
+    application_id: int,
+    technical_type_id: int,
+    business_tags: list[str],
+    created_by: int,
+    source_batch_name: Optional[str] = None,
+    external_batch_id: Optional[str] = None,
+    uploader_user_id: Optional[int] = None,
+    self_review_status: str = "none",
+    peer_review_status: str = "none",
+) -> int:
+    with db_cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO dataset_batches (
+              name, source, source_batch_name, external_batch_id, file_path,
+              application_id, technical_type_id, business_tags_json, uploader_user_id,
+              self_review_status, peer_review_status, import_status, created_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploaded', ?, ?)
+            """,
+            (
+                name,
+                source,
+                source_batch_name,
+                external_batch_id,
+                str(file_path),
+                application_id,
+                technical_type_id,
+                json.dumps(business_tags, ensure_ascii=False),
+                uploader_user_id,
+                self_review_status,
+                peer_review_status,
+                created_by,
+                now_iso(),
+            ),
+        )
+        return int(cursor.lastrowid)
 
 
 def create_taxonomy_entry(table_name: str, payload: TaxonomyCreatePayload) -> int:
@@ -303,6 +469,7 @@ def get_system_status(current_user: CurrentUser = Depends(require_admin)):
             SELECT
               id,
               name,
+              llm_use_case,
               provider_code,
               provider_type,
               base_url,
@@ -312,6 +479,7 @@ def get_system_status(current_user: CurrentUser = Depends(require_admin)):
               temperature,
               is_enabled,
               is_active,
+              is_trial_enabled,
               last_tested_at,
               last_test_status,
               last_test_message,
@@ -439,8 +607,21 @@ def list_business_tags(current_user: CurrentUser = Depends(require_admin)):
     with db_cursor() as cursor:
         rows = cursor.execute(
             """
-            SELECT id, code, name, description, is_active, sort_order, created_at
-            FROM business_tags
+            SELECT
+              b.id,
+              b.code,
+              b.name,
+              b.description,
+              b.is_active,
+              b.sort_order,
+              b.created_at,
+              (
+                SELECT COUNT(*)
+                FROM qa_items q
+                JOIN json_each(q.business_tags_json) je
+                  ON je.value = b.code
+              ) AS qa_count
+            FROM business_tags b
             ORDER BY is_active DESC, sort_order ASC, id ASC
             """
         ).fetchall()
@@ -495,12 +676,14 @@ def update_business_tag(
 
 @router.get("/llm-configs")
 def list_llm_configs(current_user: CurrentUser = Depends(require_admin)):
+    where_clause, params = get_llm_query_params(LLM_USE_CASE_EVALUATION)
     with db_cursor() as cursor:
         rows = cursor.execute(
-            """
+            f"""
             SELECT
               id,
               name,
+              llm_use_case,
               provider_code,
               provider_type,
               base_url,
@@ -510,6 +693,7 @@ def list_llm_configs(current_user: CurrentUser = Depends(require_admin)):
               temperature,
               is_enabled,
               is_active,
+              is_trial_enabled,
               last_tested_at,
               last_test_status,
               last_test_message,
@@ -517,8 +701,45 @@ def list_llm_configs(current_user: CurrentUser = Depends(require_admin)):
               created_at,
               updated_at
             FROM llm_configs
+            {where_clause}
             ORDER BY is_active DESC, id DESC
-            """
+            """,
+            params,
+        ).fetchall()
+    return {"code": 0, "message": "ok", "data": [serialize_llm_config(row) for row in rows]}
+
+
+@router.get("/trial-llm-configs")
+def list_trial_llm_configs(current_user: CurrentUser = Depends(require_admin)):
+    where_clause, params = get_llm_query_params(LLM_USE_CASE_TRIAL)
+    with db_cursor() as cursor:
+        rows = cursor.execute(
+            f"""
+            SELECT
+              id,
+              name,
+              llm_use_case,
+              provider_code,
+              provider_type,
+              base_url,
+              api_key,
+              model_name,
+              system_prompt,
+              temperature,
+              is_enabled,
+              is_active,
+              is_trial_enabled,
+              last_tested_at,
+              last_test_status,
+              last_test_message,
+              last_test_latency_ms,
+              created_at,
+              updated_at
+            FROM llm_configs
+            {where_clause}
+            ORDER BY id DESC
+            """,
+            params,
         ).fetchall()
     return {"code": 0, "message": "ok", "data": [serialize_llm_config(row) for row in rows]}
 
@@ -528,40 +749,44 @@ def create_llm_config(
     payload: LlmConfigPayload,
     current_user: CurrentUser = Depends(require_admin),
 ):
+    normalized = normalize_llm_payload(payload, LLM_USE_CASE_EVALUATION)
     created_at = now_iso()
-    api_key = payload.api_key.strip()
+    api_key = normalized["api_key"]
     if not api_key:
         raise HTTPException(status_code=400, detail="api key is required")
+    if not normalized["name"] or not normalized["base_url"] or not normalized["model_name"]:
+        raise HTTPException(status_code=400, detail="name, base_url and model_name are required")
     with db_cursor() as cursor:
         existing = cursor.execute(
             "SELECT id FROM llm_configs WHERE name = ?",
-            (payload.name,),
+            (normalized["name"],),
         ).fetchone()
         if existing:
             raise HTTPException(status_code=400, detail="llm config already exists")
-        is_enabled = payload.is_enabled or payload.is_active
-        if payload.is_active:
+        if normalized["is_active"]:
             cursor.execute("UPDATE llm_configs SET is_active = 0")
         cursor.execute(
             """
             INSERT INTO llm_configs (
-              name, provider_code, provider_type, base_url, api_key, model_name,
-              system_prompt, temperature, is_enabled, is_active,
+              name, llm_use_case, provider_code, provider_type, base_url, api_key, model_name,
+              system_prompt, temperature, is_enabled, is_active, is_trial_enabled,
               last_tested_at, last_test_status, last_test_message, last_test_latency_ms,
               created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
             """,
             (
-                payload.name,
-                payload.provider_code.strip() or "custom_openai",
-                payload.provider_type,
-                payload.base_url.strip(),
+                normalized["name"],
+                normalized["llm_use_case"],
+                normalized["provider_code"],
+                normalized["provider_type"],
+                normalized["base_url"],
                 "",
-                payload.model_name.strip(),
-                payload.system_prompt,
-                payload.temperature,
-                1 if is_enabled else 0,
-                1 if payload.is_active else 0,
+                normalized["model_name"],
+                normalized["system_prompt"],
+                normalized["temperature"],
+                1 if normalized["is_enabled"] else 0,
+                1 if normalized["is_active"] else 0,
+                0,
                 created_at,
                 created_at,
             ),
@@ -577,24 +802,29 @@ def update_llm_config(
     payload: LlmConfigPayload,
     current_user: CurrentUser = Depends(require_admin),
 ):
+    normalized = normalize_llm_payload(payload, LLM_USE_CASE_EVALUATION)
     updated_at = now_iso()
     with db_cursor() as cursor:
         existing = cursor.execute(
-            "SELECT id, api_key FROM llm_configs WHERE id = ?",
+            "SELECT id, api_key, llm_use_case FROM llm_configs WHERE id = ?",
             (config_id,),
         ).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="llm config not found")
-        api_key = payload.api_key.strip()
+        if (existing["llm_use_case"] or LLM_USE_CASE_EVALUATION) != LLM_USE_CASE_EVALUATION:
+            raise HTTPException(status_code=400, detail="config belongs to model trial scope")
+        api_key = normalized["api_key"]
         if api_key == "__KEEP_EXISTING__" or not api_key:
             api_key = get_llm_api_key(config_id, existing["api_key"])
-        is_enabled = payload.is_enabled or payload.is_active
-        if payload.is_active:
+        if not normalized["name"] or not normalized["base_url"] or not normalized["model_name"]:
+            raise HTTPException(status_code=400, detail="name, base_url and model_name are required")
+        if normalized["is_active"]:
             cursor.execute("UPDATE llm_configs SET is_active = 0 WHERE id != ?", (config_id,))
         cursor.execute(
             """
             UPDATE llm_configs
             SET name = ?,
+                llm_use_case = ?,
                 provider_code = ?,
                 provider_type = ?,
                 base_url = ?,
@@ -604,20 +834,131 @@ def update_llm_config(
                 temperature = ?,
                 is_enabled = ?,
                 is_active = ?,
+                is_trial_enabled = ?,
                 updated_at = ?
             WHERE id = ?
             """,
             (
-                payload.name,
-                payload.provider_code.strip() or "custom_openai",
-                payload.provider_type,
-                payload.base_url.strip(),
+                normalized["name"],
+                normalized["llm_use_case"],
+                normalized["provider_code"],
+                normalized["provider_type"],
+                normalized["base_url"],
                 "",
-                payload.model_name.strip(),
-                payload.system_prompt,
-                payload.temperature,
-                1 if is_enabled else 0,
-                1 if payload.is_active else 0,
+                normalized["model_name"],
+                normalized["system_prompt"],
+                normalized["temperature"],
+                1 if normalized["is_enabled"] else 0,
+                1 if normalized["is_active"] else 0,
+                0,
+                updated_at,
+                config_id,
+            ),
+        )
+    if api_key:
+        set_llm_api_key(config_id, api_key)
+    return {"code": 0, "message": "ok", "data": {"id": config_id}}
+
+
+@router.post("/trial-llm-configs")
+def create_trial_llm_config(
+    payload: LlmConfigPayload,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    normalized = normalize_llm_payload(payload, LLM_USE_CASE_TRIAL)
+    created_at = now_iso()
+    api_key = normalized["api_key"]
+    if not api_key:
+        raise HTTPException(status_code=400, detail="api key is required")
+    if not normalized["name"] or not normalized["base_url"] or not normalized["model_name"]:
+        raise HTTPException(status_code=400, detail="name, base_url and model_name are required")
+    with db_cursor() as cursor:
+        existing = cursor.execute(
+            "SELECT id FROM llm_configs WHERE name = ?",
+            (normalized["name"],),
+        ).fetchone()
+        if existing:
+            raise HTTPException(status_code=400, detail="llm config already exists")
+        cursor.execute(
+            """
+            INSERT INTO llm_configs (
+              name, llm_use_case, provider_code, provider_type, base_url, api_key, model_name,
+              system_prompt, temperature, is_enabled, is_active, is_trial_enabled,
+              last_tested_at, last_test_status, last_test_message, last_test_latency_ms,
+              created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, NULL, NULL, NULL, NULL, ?, ?)
+            """,
+            (
+                normalized["name"],
+                normalized["llm_use_case"],
+                normalized["provider_code"],
+                normalized["provider_type"],
+                normalized["base_url"],
+                "",
+                normalized["model_name"],
+                normalized["system_prompt"],
+                normalized["temperature"],
+                1 if normalized["is_enabled"] else 0,
+                created_at,
+                created_at,
+            ),
+        )
+        config_id = int(cursor.lastrowid)
+    set_llm_api_key(config_id, api_key)
+    return {"code": 0, "message": "ok", "data": {"id": config_id}}
+
+
+@router.patch("/trial-llm-configs/{config_id}")
+def update_trial_llm_config(
+    config_id: int,
+    payload: LlmConfigPayload,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    normalized = normalize_llm_payload(payload, LLM_USE_CASE_TRIAL)
+    updated_at = now_iso()
+    with db_cursor() as cursor:
+        existing = cursor.execute(
+            "SELECT id, api_key, llm_use_case FROM llm_configs WHERE id = ?",
+            (config_id,),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="llm config not found")
+        if (existing["llm_use_case"] or LLM_USE_CASE_EVALUATION) != LLM_USE_CASE_TRIAL:
+            raise HTTPException(status_code=400, detail="config belongs to qa evaluation scope")
+        api_key = normalized["api_key"]
+        if api_key == "__KEEP_EXISTING__" or not api_key:
+            api_key = get_llm_api_key(config_id, existing["api_key"])
+        if not normalized["name"] or not normalized["base_url"] or not normalized["model_name"]:
+            raise HTTPException(status_code=400, detail="name, base_url and model_name are required")
+        cursor.execute(
+            """
+            UPDATE llm_configs
+            SET name = ?,
+                llm_use_case = ?,
+                provider_code = ?,
+                provider_type = ?,
+                base_url = ?,
+                api_key = ?,
+                model_name = ?,
+                system_prompt = ?,
+                temperature = ?,
+                is_enabled = ?,
+                is_active = 0,
+                is_trial_enabled = 1,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                normalized["name"],
+                normalized["llm_use_case"],
+                normalized["provider_code"],
+                normalized["provider_type"],
+                normalized["base_url"],
+                "",
+                normalized["model_name"],
+                normalized["system_prompt"],
+                normalized["temperature"],
+                1 if normalized["is_enabled"] else 0,
                 updated_at,
                 config_id,
             ),
@@ -634,11 +975,13 @@ def activate_llm_config(
 ):
     with db_cursor() as cursor:
         existing = cursor.execute(
-            "SELECT id FROM llm_configs WHERE id = ?",
+            "SELECT id, llm_use_case FROM llm_configs WHERE id = ?",
             (config_id,),
         ).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="llm config not found")
+        if (existing["llm_use_case"] or LLM_USE_CASE_EVALUATION) != LLM_USE_CASE_EVALUATION:
+            raise HTTPException(status_code=400, detail="trial-only llm config cannot be activated for qa evaluation")
         cursor.execute("UPDATE llm_configs SET is_active = 0")
         cursor.execute(
             "UPDATE llm_configs SET is_enabled = 1, is_active = 1, updated_at = ? WHERE id = ?",
@@ -656,11 +999,13 @@ def enable_llm_config(
     updated_at = now_iso()
     with db_cursor() as cursor:
         existing = cursor.execute(
-            "SELECT id, is_active FROM llm_configs WHERE id = ?",
+            "SELECT id, is_active, llm_use_case FROM llm_configs WHERE id = ?",
             (config_id,),
         ).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="llm config not found")
+        if (existing["llm_use_case"] or LLM_USE_CASE_EVALUATION) != LLM_USE_CASE_EVALUATION:
+            raise HTTPException(status_code=400, detail="config belongs to model trial scope")
         cursor.execute(
             """
             UPDATE llm_configs
@@ -676,17 +1021,61 @@ def enable_llm_config(
     }
 
 
+@router.post("/llm-configs/{config_id}/trial-enable")
+def redirect_trial_toggle(
+    config_id: int,
+    payload: LlmConfigTrialEnablePayload,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    raise HTTPException(status_code=410, detail="use /api/admin/trial-llm-configs pages and endpoints instead")
+
+
+@router.post("/trial-llm-configs/{config_id}/enable")
+def enable_trial_llm_config(
+    config_id: int,
+    payload: LlmConfigEnablePayload,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    with db_cursor() as cursor:
+        existing = cursor.execute(
+            "SELECT id, llm_use_case FROM llm_configs WHERE id = ?",
+            (config_id,),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="llm config not found")
+        if (existing["llm_use_case"] or LLM_USE_CASE_EVALUATION) != LLM_USE_CASE_TRIAL:
+            raise HTTPException(status_code=400, detail="config belongs to qa evaluation scope")
+        cursor.execute(
+            "UPDATE llm_configs SET is_enabled = ?, updated_at = ? WHERE id = ?",
+            (1 if payload.is_enabled else 0, now_iso(), config_id),
+        )
+    return {"code": 0, "message": "ok", "data": {"id": config_id, "is_enabled": payload.is_enabled}}
+
+
 @router.post("/llm-configs/{config_id}/test")
 def test_llm_config(
     config_id: int,
     current_user: CurrentUser = Depends(require_admin),
 ):
+    return _test_llm_config(config_id, LLM_USE_CASE_EVALUATION)
+
+
+@router.post("/trial-llm-configs/{config_id}/test")
+def test_trial_llm_config(
+    config_id: int,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    return _test_llm_config(config_id, LLM_USE_CASE_TRIAL)
+
+
+def _test_llm_config(config_id: int, expected_use_case: str):
     with db_cursor() as cursor:
         row = cursor.execute(
             """
             SELECT
               id,
               name,
+              llm_use_case,
               provider_code,
               provider_type,
               base_url,
@@ -701,6 +1090,16 @@ def test_llm_config(
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="llm config not found")
+        actual_use_case = row["llm_use_case"] or LLM_USE_CASE_EVALUATION
+        if actual_use_case != expected_use_case:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "config belongs to model trial scope"
+                    if actual_use_case == LLM_USE_CASE_TRIAL
+                    else "config belongs to qa evaluation scope"
+                ),
+            )
 
     api_key = get_llm_api_key(config_id, row["api_key"])
     tested_at = now_iso()
@@ -1284,72 +1683,27 @@ async def upload_import(
     business_tags_json: str = Form(default="[]"),
     current_user: CurrentUser = Depends(require_admin),
 ):
-    try:
-        business_tags = json.loads(business_tags_json)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail="business_tags_json must be valid json") from exc
-    if not isinstance(business_tags, list) or not all(isinstance(item, str) for item in business_tags):
-        raise HTTPException(status_code=400, detail="business_tags_json must be an array of strings")
+    business_tags = parse_import_business_tags(business_tags_json)
+    application_db_id, technical_type_id = validate_import_target(
+        application_id,
+        technical_type_code,
+        business_tags,
+    )
 
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     filename = f"{uuid4().hex}_{Path(file.filename or 'dataset.json').name}"
     file_path = UPLOAD_DIR / filename
     file_path.write_bytes(await file.read())
 
-    created_at = now_iso()
-    with db_cursor() as cursor:
-        application = cursor.execute(
-            """
-            SELECT id
-            FROM applications
-            WHERE id = ? AND is_active = 1
-            """,
-            (application_id,),
-        ).fetchone()
-        if not application:
-            raise HTTPException(status_code=400, detail=f"application not found: {application_id}")
-        technical_type = cursor.execute(
-            """
-            SELECT id
-            FROM technical_types
-            WHERE code = ? AND is_active = 1
-            """,
-            (technical_type_code,),
-        ).fetchone()
-        if not technical_type:
-            raise HTTPException(status_code=400, detail=f"technical_type not found: {technical_type_code}")
-        if business_tags:
-            tag_rows = cursor.execute(
-                f"""
-                SELECT code
-                FROM business_tags
-                WHERE code IN ({",".join("?" for _ in business_tags)}) AND is_active = 1
-                """,
-                tuple(business_tags),
-            ).fetchall()
-            found_codes = {row["code"] for row in tag_rows}
-            missing_codes = [code for code in business_tags if code not in found_codes]
-            if missing_codes:
-                raise HTTPException(status_code=400, detail=f"business_tag not found: {missing_codes[0]}")
-        cursor.execute(
-            """
-            INSERT INTO dataset_batches (
-              name, source, file_path, application_id, technical_type_id, business_tags_json,
-              import_status, created_by, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'uploaded', ?, ?)
-            """,
-            (
-                name,
-                source,
-                str(file_path),
-                application["id"],
-                technical_type["id"],
-                json.dumps(business_tags, ensure_ascii=False),
-                current_user["id"],
-                created_at,
-            ),
-        )
-        batch_id = cursor.lastrowid
+    batch_id = create_dataset_batch(
+        name=name,
+        source=source,
+        file_path=file_path,
+        application_id=application_db_id,
+        technical_type_id=technical_type_id,
+        business_tags=business_tags,
+        created_by=current_user["id"],
+    )
 
     return {
         "code": 0,
@@ -1358,10 +1712,73 @@ async def upload_import(
     }
 
 
+@router.post("/imports/push")
+def push_import(payload: ImportPushPayload, current_user: CurrentUser = Depends(require_admin)):
+    if not payload.rows:
+        raise HTTPException(status_code=400, detail="rows must not be empty")
+
+    business_tags = [code for code in payload.business_tag_codes if code]
+    application_db_id, technical_type_id = validate_import_target(
+        payload.application_id,
+        payload.technical_type_code,
+        business_tags,
+    )
+
+    rows = [row.model_dump(exclude_none=True) for row in payload.rows]
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"{uuid4().hex}_remote_sync.json"
+    file_path = UPLOAD_DIR / filename
+    file_path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    batch_id = create_dataset_batch(
+        name=payload.name,
+        source=payload.source,
+        file_path=file_path,
+        application_id=application_db_id,
+        technical_type_id=technical_type_id,
+        business_tags=business_tags,
+        created_by=current_user["id"],
+    )
+
+    job_id = None
+    parse_queued = False
+    if payload.auto_parse:
+        job_id, parse_queued = queue_unique_import_job(batch_id)
+
+    return {
+        "code": 0,
+        "message": "ok",
+        "data": {
+            "batch_id": batch_id,
+            "job_id": job_id,
+            "file_path": str(file_path),
+            "import_status": "uploaded",
+            "parse_queued": parse_queued,
+        },
+    }
+
+
 @router.post("/imports/{batch_id}/parse")
 def parse_import(batch_id: int, current_user: CurrentUser = Depends(require_admin)):
-    job_id = queue_job("import", {"batch_id": batch_id})
-    return {"code": 0, "message": "ok", "data": {"job_id": job_id}}
+    with db_cursor() as cursor:
+        batch = cursor.execute(
+            "SELECT id, import_status FROM dataset_batches WHERE id = ?",
+            (batch_id,),
+        ).fetchone()
+    if not batch:
+        raise HTTPException(status_code=404, detail="batch not found")
+    if batch["import_status"] == "parsed":
+        return {
+            "code": 0,
+            "message": "ok",
+            "data": {"job_id": None, "parse_queued": False, "import_status": "parsed"},
+        }
+    job_id, parse_queued = queue_unique_import_job(batch_id)
+    return {
+        "code": 0,
+        "message": "ok",
+        "data": {"job_id": job_id, "parse_queued": parse_queued, "import_status": batch["import_status"]},
+    }
 
 
 @router.get("/imports")
@@ -1380,17 +1797,122 @@ def list_imports(current_user: CurrentUser = Depends(require_admin)):
               b.fail_count,
               b.created_at,
               b.application_id,
+              b.source_batch_name,
+              b.external_batch_id,
+              b.uploader_user_id,
               b.business_tags_json,
               a.name AS application_name,
+              u.username AS uploader_username,
+              u.full_name AS uploader_full_name,
               tt.code AS technical_type_code,
               tt.name AS technical_type_name
             FROM dataset_batches b
             LEFT JOIN applications a ON a.id = b.application_id
+            LEFT JOIN users u ON u.id = b.uploader_user_id
             LEFT JOIN technical_types tt ON tt.id = b.technical_type_id
             ORDER BY b.id DESC
             """
         ).fetchall()
     return {"code": 0, "message": "ok", "data": [dict(row) for row in rows]}
+
+
+@router.get("/imports/{batch_id}")
+def get_import_detail(batch_id: int, current_user: CurrentUser = Depends(require_admin)):
+    with db_cursor() as cursor:
+        batch = cursor.execute(
+            """
+            SELECT
+              b.id,
+              b.name,
+              b.source,
+              b.source_batch_name,
+              b.external_batch_id,
+              b.file_path,
+              b.import_status,
+              b.total_count,
+              b.success_count,
+              b.fail_count,
+              b.created_at,
+              b.application_id,
+              b.business_tags_json,
+              b.uploader_user_id,
+              b.self_review_status,
+              b.peer_review_status,
+              a.name AS application_name,
+              u.username AS uploader_username,
+              u.full_name AS uploader_full_name,
+              tt.code AS technical_type_code,
+              tt.name AS technical_type_name
+            FROM dataset_batches b
+            LEFT JOIN applications a ON a.id = b.application_id
+            LEFT JOIN users u ON u.id = b.uploader_user_id
+            LEFT JOIN technical_types tt ON tt.id = b.technical_type_id
+            WHERE b.id = ?
+            """,
+            (batch_id,),
+        ).fetchone()
+        if not batch:
+            raise HTTPException(status_code=404, detail="batch not found")
+
+        failures = cursor.execute(
+            """
+            SELECT id, row_no, external_id, question_preview, error_message, raw_payload_json, created_at
+            FROM dataset_batch_failures
+            WHERE dataset_batch_id = ?
+            ORDER BY row_no ASC, id ASC
+            """,
+            (batch_id,),
+        ).fetchall()
+
+        items = cursor.execute(
+            """
+            SELECT
+              q.id,
+              q.external_id,
+              q.status,
+              q.question_text,
+              q.context_text,
+              q.source,
+              q.source_model,
+              q.metadata_json,
+              ans.id AS current_answer_id,
+              ans.answer_text AS current_answer_text,
+              (
+                SELECT COUNT(*)
+                FROM evaluation_tasks t
+                WHERE t.answer_id = ans.id
+                  AND t.task_type = 'initial_review'
+              ) AS review_task_total,
+              (
+                SELECT COUNT(*)
+                FROM evaluation_tasks t
+                WHERE t.answer_id = ans.id
+                  AND t.task_type = 'initial_review'
+                  AND t.status = 'submitted'
+              ) AS review_task_submitted
+            FROM qa_items q
+            LEFT JOIN qa_answers ans ON ans.qa_item_id = q.id AND ans.is_current = 1
+            WHERE q.dataset_batch_id = ?
+            ORDER BY q.id DESC
+            """,
+            (batch_id,),
+        ).fetchall()
+
+    return {
+        "code": 0,
+        "message": "ok",
+        "data": {
+            "batch": dict(batch),
+            "failures": [dict(row) for row in failures],
+            "items": [
+                {
+                    **dict(row),
+                    "question_summary": str(row["question_text"])[:120],
+                }
+                for row in items
+            ],
+        },
+    }
 
 
 @router.get("/imports/{batch_id}/failures")
@@ -1406,12 +1928,18 @@ def list_import_failures(batch_id: int, current_user: CurrentUser = Depends(requ
               b.success_count,
               b.fail_count,
               b.application_id,
+              b.source_batch_name,
+              b.external_batch_id,
+              b.uploader_user_id,
               b.business_tags_json,
               a.name AS application_name,
+              u.username AS uploader_username,
+              u.full_name AS uploader_full_name,
               tt.code AS technical_type_code,
               tt.name AS technical_type_name
             FROM dataset_batches b
             LEFT JOIN applications a ON a.id = b.application_id
+            LEFT JOIN users u ON u.id = b.uploader_user_id
             LEFT JOIN technical_types tt ON tt.id = b.technical_type_id
             WHERE b.id = ?
             """,
@@ -1451,6 +1979,7 @@ def list_qas(current_user: CurrentUser = Depends(require_admin)):
               q.question_text,
               q.status,
               q.business_tags_json,
+              q.metadata_json,
               a.name AS application_name,
               tt.code AS technical_type_code,
               tt.name AS technical_type_name,

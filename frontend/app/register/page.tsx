@@ -27,7 +27,7 @@ export default function RegisterPage() {
         const data = await apiFetch<ApplicationItem[]>("/api/applications");
         setApplications(data);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "加载应用失败");
+        setError(err instanceof Error ? err.message : "加载项目失败");
       }
     }
     void loadApplications();
@@ -115,7 +115,7 @@ export default function RegisterPage() {
               onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))}
             />
             <div className="rounded-3xl border border-border bg-stone-50 p-4 md:col-span-2">
-              <p className="mb-3 text-sm font-medium">擅长应用</p>
+              <p className="mb-3 text-sm font-medium">参与项目</p>
               <div className="flex flex-wrap gap-2">
                 {applications.map((application) => {
                   const selected = selectedApplications.includes(application.id);

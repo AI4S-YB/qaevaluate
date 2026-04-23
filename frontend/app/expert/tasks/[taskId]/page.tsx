@@ -167,6 +167,26 @@ function parseTags(tagsJson: string | null) {
   }
 }
 
+type QaMetadata = {
+  scene_code?: string;
+  scene_name?: string;
+  module_key?: string;
+  module_name?: string;
+  action_key?: string;
+  action_name?: string;
+  cot_sequence_no?: number;
+};
+
+function parseQaMetadata(metadataJson: string | null) {
+  if (!metadataJson) return {} as QaMetadata;
+  try {
+    const parsed = JSON.parse(metadataJson) as QaMetadata;
+    return parsed && typeof parsed === "object" ? parsed : ({} as QaMetadata);
+  } catch {
+    return {} as QaMetadata;
+  }
+}
+
 function formatDate(value: string) {
   return value.replace("T", " ").slice(0, 16);
 }
@@ -905,6 +925,10 @@ export default function ExpertTaskDetailPage() {
     () => (detail ? parseTags(detail.qa_item.business_tags_json) : []),
     [detail]
   );
+  const qaMetadata = useMemo(
+    () => (detail ? parseQaMetadata(detail.qa_item.metadata_json) : ({} as QaMetadata)),
+    [detail]
+  );
   const sessions = detail?.llm_sessions ?? [];
   const messages = selectedSessionId ? sessionMessagesMap[selectedSessionId] ?? [] : [];
   const candidates = detail?.candidate_answers ?? [];
@@ -975,10 +999,15 @@ export default function ExpertTaskDetailPage() {
           {detail.qa_item.technical_type_name ? (
             <Badge variant="warning">{detail.qa_item.technical_type_name}</Badge>
           ) : null}
+          {qaMetadata.module_name ? <Badge variant="default">{qaMetadata.module_name}</Badge> : null}
+          {qaMetadata.action_name ? <Badge variant="muted">{qaMetadata.action_name}</Badge> : null}
           <Badge variant={detail.task.status === "submitted" ? "success" : "default"}>
             {taskTypeLabel}
           </Badge>
           {isSubmitted ? <Badge variant="success">已提交，可再次修改</Badge> : null}
+          {qaMetadata.cot_sequence_no ? (
+            <Badge variant="muted">CoT {qaMetadata.cot_sequence_no}</Badge>
+          ) : null}
           {tags.map((tag) => (
             <Badge key={tag} variant="warning">
               {tag}
@@ -1009,6 +1038,40 @@ export default function ExpertTaskDetailPage() {
             <CardTitle>问题与待评答案</CardTitle>
           </CardHeader>
           <CardContent className="space-y-6">
+            {(qaMetadata.scene_name || qaMetadata.module_name || qaMetadata.action_name) ? (
+              <div className="rounded-[28px] border border-border bg-white p-5">
+                <p className="text-sm text-muted-foreground">CoT 链路定位</p>
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <div className="rounded-[20px] border border-border bg-stone-50 p-4">
+                    <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">领域场景</p>
+                    <p className="mt-2 text-sm text-foreground">
+                      {qaMetadata.scene_name ?? businessTags[0] ?? "未标注"}
+                    </p>
+                  </div>
+                  <div className="rounded-[20px] border border-border bg-stone-50 p-4">
+                    <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">研究模块</p>
+                    <p className="mt-2 text-sm text-foreground">
+                      {qaMetadata.module_name ?? "未标注"}
+                    </p>
+                  </div>
+                  <div className="rounded-[20px] border border-border bg-stone-50 p-4">
+                    <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">推理动作</p>
+                    <p className="mt-2 text-sm text-foreground">
+                      {qaMetadata.action_name ?? "未标注"}
+                    </p>
+                  </div>
+                  <div className="rounded-[20px] border border-border bg-stone-50 p-4">
+                    <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">链路序号</p>
+                    <p className="mt-2 text-sm text-foreground">
+                      {qaMetadata.cot_sequence_no ? `CoT ${qaMetadata.cot_sequence_no}` : "未标注"}
+                    </p>
+                  </div>
+                </div>
+                <p className="mt-4 text-sm leading-7 text-muted-foreground">
+                  这道题不是孤立评审项，而是同一场景研究知识图谱中的一个节点。评审时需要同时考虑单题答案质量，以及它在当前模块和推理动作上的方法论完整性。
+                </p>
+              </div>
+            ) : null}
             <div className="rounded-[28px] border border-border bg-stone-50 p-5">
               <p className="text-sm text-muted-foreground">问题</p>
               <p className="mt-2 text-lg leading-8">{detail.qa_item.question_text}</p>

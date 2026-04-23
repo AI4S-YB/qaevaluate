@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS business_tags (
 CREATE TABLE IF NOT EXISTS llm_configs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
+  llm_use_case TEXT NOT NULL DEFAULT 'evaluation' CHECK(llm_use_case IN ('evaluation', 'trial')),
   provider_code TEXT NOT NULL DEFAULT 'custom_openai',
   provider_type TEXT NOT NULL CHECK(provider_type IN ('openai_compatible')),
   base_url TEXT NOT NULL,
@@ -64,6 +65,7 @@ CREATE TABLE IF NOT EXISTS llm_configs (
   temperature REAL NOT NULL DEFAULT 0.2,
   is_enabled INTEGER NOT NULL DEFAULT 1,
   is_active INTEGER NOT NULL DEFAULT 0,
+  is_trial_enabled INTEGER NOT NULL DEFAULT 0,
   last_tested_at TEXT,
   last_test_status TEXT CHECK(last_test_status IN ('passed', 'failed')),
   last_test_message TEXT,
@@ -98,10 +100,17 @@ CREATE TABLE IF NOT EXISTS dataset_batches (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   source TEXT,
+  source_batch_name TEXT,
+  external_batch_id TEXT,
   file_path TEXT,
   application_id INTEGER,
   technical_type_id INTEGER,
   business_tags_json TEXT,
+  uploader_user_id INTEGER,
+  parse_lock_token TEXT,
+  parse_lock_acquired_at TEXT,
+  self_review_status TEXT NOT NULL DEFAULT 'none' CHECK(self_review_status IN ('none', 'queued', 'pending', 'in_progress', 'submitted')),
+  peer_review_status TEXT NOT NULL DEFAULT 'none' CHECK(peer_review_status IN ('none', 'queued', 'pending', 'in_progress', 'completed')),
   import_status TEXT NOT NULL CHECK(import_status IN ('uploaded', 'parsed', 'failed')),
   total_count INTEGER NOT NULL DEFAULT 0,
   success_count INTEGER NOT NULL DEFAULT 0,
@@ -109,6 +118,7 @@ CREATE TABLE IF NOT EXISTS dataset_batches (
   created_by INTEGER NOT NULL,
   created_at TEXT NOT NULL,
   FOREIGN KEY (created_by) REFERENCES users(id),
+  FOREIGN KEY (uploader_user_id) REFERENCES users(id),
   FOREIGN KEY (application_id) REFERENCES applications(id),
   FOREIGN KEY (technical_type_id) REFERENCES technical_types(id)
 );
@@ -134,9 +144,11 @@ CREATE TABLE IF NOT EXISTS qa_items (
   dataset_batch_id INTEGER,
   question_text TEXT NOT NULL,
   context_text TEXT,
+  metadata_json TEXT,
   tags_json TEXT,
   difficulty TEXT,
   source TEXT,
+  source_model TEXT,
   status TEXT NOT NULL CHECK(status IN ('draft', 'active', 'in_review', 'reviewed', 'archived')),
   created_at TEXT NOT NULL,
   FOREIGN KEY (technical_type_id) REFERENCES technical_types(id),
@@ -254,6 +266,33 @@ CREATE TABLE IF NOT EXISTS llm_messages (
   FOREIGN KEY (generated_answer_id) REFERENCES qa_answers(id)
 );
 
+CREATE TABLE IF NOT EXISTS model_trial_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  expert_user_id INTEGER NOT NULL,
+  llm_config_id INTEGER NOT NULL,
+  llm_config_name TEXT,
+  llm_model_name TEXT,
+  source_qa_item_id INTEGER,
+  source_answer_id INTEGER,
+  title TEXT,
+  status TEXT NOT NULL CHECK(status IN ('active', 'completed', 'failed')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (expert_user_id) REFERENCES users(id),
+  FOREIGN KEY (llm_config_id) REFERENCES llm_configs(id),
+  FOREIGN KEY (source_qa_item_id) REFERENCES qa_items(id),
+  FOREIGN KEY (source_answer_id) REFERENCES qa_answers(id)
+);
+
+CREATE TABLE IF NOT EXISTS model_trial_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES model_trial_sessions(id)
+);
+
 CREATE TABLE IF NOT EXISTS evaluation_drafts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id INTEGER NOT NULL UNIQUE,
@@ -312,15 +351,25 @@ CREATE INDEX IF NOT EXISTS idx_auth_sessions_token ON auth_sessions(token);
 CREATE INDEX IF NOT EXISTS idx_technical_types_active ON technical_types(is_active, sort_order);
 CREATE INDEX IF NOT EXISTS idx_business_tags_active ON business_tags(is_active, sort_order);
 CREATE INDEX IF NOT EXISTS idx_llm_configs_active ON llm_configs(is_active, id DESC);
+CREATE INDEX IF NOT EXISTS idx_llm_configs_trial_enabled ON llm_configs(is_trial_enabled, is_enabled, id DESC);
+CREATE INDEX IF NOT EXISTS idx_llm_configs_use_case ON llm_configs(llm_use_case, is_enabled, is_active, id DESC);
 CREATE INDEX IF NOT EXISTS idx_expert_business_tags_expert ON expert_business_tags(expert_user_id, priority);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dataset_batches_source_uploader_external
+  ON dataset_batches(source, uploader_user_id, external_batch_id);
+CREATE INDEX IF NOT EXISTS idx_dataset_batches_parse_lock
+  ON dataset_batches(import_status, parse_lock_token, parse_lock_acquired_at, id DESC);
 CREATE INDEX IF NOT EXISTS idx_qa_items_app_status ON qa_items(application_id, status);
 CREATE INDEX IF NOT EXISTS idx_qa_items_technical_type ON qa_items(technical_type_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_qa_items_batch_external
+  ON qa_items(dataset_batch_id, external_id);
 CREATE INDEX IF NOT EXISTS idx_qa_answers_item_type ON qa_answers(qa_item_id, answer_type);
 CREATE INDEX IF NOT EXISTS idx_tasks_expert_status ON evaluation_tasks(expert_user_id, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_answer_status ON evaluation_tasks(answer_id, status);
 CREATE INDEX IF NOT EXISTS idx_task_abandons_answer_expert ON expert_task_abandons(answer_id, expert_user_id);
 CREATE INDEX IF NOT EXISTS idx_records_answer ON evaluation_records(answer_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_task ON llm_sessions(task_id);
+CREATE INDEX IF NOT EXISTS idx_model_trial_sessions_expert ON model_trial_sessions(expert_user_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_model_trial_messages_session ON model_trial_messages(session_id, id ASC);
 CREATE INDEX IF NOT EXISTS idx_drafts_task ON evaluation_drafts(task_id);
 CREATE INDEX IF NOT EXISTS idx_export_jobs_status ON export_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_batch_failures_batch ON dataset_batch_failures(dataset_batch_id, row_no);

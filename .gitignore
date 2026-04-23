@@ -1,5 +1,6 @@
 .DS_Store
 session.md
+local-domain-owner-accounts.md
 docs/
 __pycache__/
 *.pyc

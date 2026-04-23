@@ -147,6 +147,12 @@ export default function ExpertDashboardPage() {
             <Link href="/expert/tasks">开始评测</Link>
           </Button>
           <Button asChild variant="secondary">
+            <Link href="/expert/imports">上传 QA</Link>
+          </Button>
+          <Button asChild variant="secondary">
+            <Link href="/expert/model-trial">模型试用</Link>
+          </Button>
+          <Button asChild variant="secondary">
             <Link href="/expert/history">查看历史</Link>
           </Button>
           <Button asChild variant="secondary">

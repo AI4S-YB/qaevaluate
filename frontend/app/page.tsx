@@ -17,7 +17,7 @@ const highlights = [
   },
   {
     title: "审核制专家体系",
-    description: "专家先注册后审核，按应用领域分发，保证评测质量和稳定性。",
+    description: "专家先注册后审核，按项目与领域场景分发，保证评测质量和稳定性。",
     icon: ShieldCheck
   }
 ];
@@ -64,7 +64,7 @@ export default function HomePage() {
             <CardContent className="space-y-4">
               {[
                 "管理员导入 JSON 数据并审核专家注册",
-                "系统按应用领域给专家分发至少 2 份评测任务",
+                "系统按项目与领域场景给专家分发至少 2 份评测任务",
                 "专家在任务内调用 LLM 做核查与候选答案生成",
                 "系统聚合结果，管理员确认最终标准答案"
               ].map((step, index) => (

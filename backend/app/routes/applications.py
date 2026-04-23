@@ -124,3 +124,66 @@ def update_application(
             (payload.name, payload.description, int(payload.is_active), application_id),
         )
     return {"code": 0, "message": "ok", "data": {"id": application_id}}
+
+
+@router.get("/api/admin/applications/{application_id}/business-tags")
+def list_application_business_tags(
+    application_id: int,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    with db_cursor() as cursor:
+        application = cursor.execute(
+            "SELECT id, name FROM applications WHERE id = ?",
+            (application_id,),
+        ).fetchone()
+        if not application:
+            return {"code": 0, "message": "ok", "data": []}
+
+        rows = cursor.execute(
+            """
+            SELECT
+              b.id,
+              b.code,
+              b.name,
+              COUNT(DISTINCT q.id) AS qa_count,
+              SUM(CASE WHEN q.status = 'reviewed' THEN 1 ELSE 0 END) AS reviewed_qas,
+              SUM(
+                CASE
+                  WHEN agg.final_standard_answer_id IS NOT NULL
+                   AND agg.current_answer_id = agg.final_standard_answer_id
+                   AND agg.final_decision IN ('pass', 'rewrite', 'fail')
+                  THEN 1 ELSE 0
+                END
+              ) AS closed_qas,
+              COUNT(
+                DISTINCT CASE
+                  WHEN u.role = 'expert'
+                   AND u.status = 'approved'
+                   AND ea.application_id = ?
+                  THEN u.id
+                  ELSE NULL
+                END
+              ) AS expert_count
+            FROM business_tags b
+            LEFT JOIN qa_items q
+              ON q.application_id = ?
+             AND EXISTS (
+               SELECT 1
+               FROM json_each(q.business_tags_json) je
+               WHERE je.value = b.code
+             )
+            LEFT JOIN qa_aggregates agg ON agg.qa_item_id = q.id
+            LEFT JOIN expert_business_tags ebt ON ebt.business_tag_id = b.id
+            LEFT JOIN users u ON u.id = ebt.expert_user_id
+            LEFT JOIN expert_applications ea
+              ON ea.expert_user_id = u.id
+             AND ea.application_id = ?
+            WHERE b.is_active = 1
+            GROUP BY b.id, b.code, b.name, b.sort_order
+            HAVING COUNT(DISTINCT q.id) > 0
+            ORDER BY b.sort_order ASC, b.id ASC
+            """,
+            (application_id, application_id, application_id),
+        ).fetchall()
+
+    return {"code": 0, "message": "ok", "data": [dict(row) for row in rows]}

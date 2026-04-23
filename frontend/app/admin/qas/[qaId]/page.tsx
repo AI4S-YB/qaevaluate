@@ -43,6 +43,27 @@ function formatTagList(value: string | null | undefined) {
   }
 }
 
+type QaMetadata = {
+  scene_code?: string;
+  scene_name?: string;
+  module_key?: string;
+  module_name?: string;
+  action_key?: string;
+  action_name?: string;
+  seed_group?: string;
+  cot_sequence_no?: number;
+};
+
+function parseQaMetadata(value: string | null | undefined) {
+  if (!value) return {} as QaMetadata;
+  try {
+    const parsed = JSON.parse(value) as QaMetadata;
+    return parsed && typeof parsed === "object" ? parsed : ({} as QaMetadata);
+  } catch {
+    return {} as QaMetadata;
+  }
+}
+
 export default function AdminQaDetailPage() {
   const params = useParams<{ qaId: string }>();
   const qaId = params.qaId;
@@ -123,6 +144,10 @@ export default function AdminQaDetailPage() {
     () => formatTagList(detail?.qa_item.business_tags_json),
     [detail?.qa_item.business_tags_json]
   );
+  const metadata = useMemo(
+    () => parseQaMetadata(detail?.qa_item.metadata_json),
+    [detail?.qa_item.metadata_json]
+  );
 
   if (loading) {
     return (
@@ -179,8 +204,12 @@ export default function AdminQaDetailPage() {
             <CardTitle>问题与状态</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4 text-sm leading-7 text-muted-foreground">
-            <p>应用：{detail.qa_item.application_name}</p>
+            <p>项目：{detail.qa_item.application_name}</p>
             <p>QA 类型：{detail.qa_item.technical_type_name || "未定义"}</p>
+            <p>领域场景：{metadata.scene_name ?? businessTags[0] ?? "未标注"}</p>
+            {metadata.module_name ? <p>研究模块：{metadata.module_name}</p> : null}
+            {metadata.action_name ? <p>推理动作：{metadata.action_name}</p> : null}
+            {metadata.cot_sequence_no ? <p>CoT 序号：{metadata.cot_sequence_no}</p> : null}
             <p>问题：{detail.qa_item.question_text}</p>
             <p>来源：{detail.qa_item.source || "未记录"}</p>
             <div className="flex flex-wrap gap-2">
@@ -188,6 +217,8 @@ export default function AdminQaDetailPage() {
               {detail.qa_item.technical_type_name ? (
                 <Badge variant="warning">{detail.qa_item.technical_type_name}</Badge>
               ) : null}
+              {metadata.module_name ? <Badge variant="default">{metadata.module_name}</Badge> : null}
+              {metadata.action_name ? <Badge variant="muted">{metadata.action_name}</Badge> : null}
               <Badge variant={decisionVariant(detail.aggregate?.final_decision ?? "pending")}>
                 {decisionLabel(detail.aggregate?.final_decision ?? "pending")}
               </Badge>
@@ -227,9 +258,17 @@ export default function AdminQaDetailPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>聚合结论说明</CardTitle>
+            <CardTitle>CoT 链路与聚合说明</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4 text-sm leading-7 text-muted-foreground">
+            <div className="rounded-[28px] border border-border bg-stone-50 p-4">
+              <p className="font-medium text-foreground">研究链路定位</p>
+              <p className="mt-2">
+                {metadata.module_name || metadata.action_name
+                  ? `这道题当前位于“${metadata.module_name ?? "未标注模块"} / ${metadata.action_name ?? "未标注动作"}”节点，用于把单题评测挂到同一场景的研究链路中。`
+                  : "当前题目没有标注 CoT 链路元数据。"}
+              </p>
+            </div>
             <div className="rounded-[28px] border border-border bg-stone-50 p-4">
               <p className="font-medium text-foreground">当前聚合指向</p>
               <p className="mt-2">

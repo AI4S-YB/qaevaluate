@@ -172,6 +172,42 @@ sudo systemctl enable --now qaevaluate-backup.timer
 QAEVALUATE_ENV=development python3 backend/scripts/smoke_import_batch.py
 ```
 
+如果需要从另一套程序直接推送批量 QA，而不是走文件上传，也可以调用 JSON 接口：
+
+```bash
+curl -X POST http://127.0.0.1:8100/api/admin/imports/push \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin-token>" \
+  -d '{
+    "name": "remote-sync-20260423",
+    "source": "user-program",
+    "application_id": 1,
+    "technical_type_code": "cot_qa",
+    "business_tag_codes": ["tomato"],
+    "auto_parse": true,
+    "rows": [
+      {
+        "id": "qa_ext_001",
+        "question": "番茄裂果的常见原因是什么？",
+        "answer": "常与水分波动、温差过大和钙硼供应不足有关。",
+        "context": "设施栽培，近期灌溉不均。",
+        "difficulty": "medium",
+        "source": "user-program",
+        "model": "generator-v1"
+      }
+    ]
+  }'
+```
+
+返回结果会包含：
+
+- `batch_id`：当前导入批次 ID
+- `job_id`：如果 `auto_parse=true`，会返回异步解析任务 ID
+- `parse_queued`：是否已经自动进入解析队列
+
+该接口复用现有批次导入逻辑，`rows` 中每条记录至少需要 `question` 和 `answer`；
+如果未显式提供 `answer`，也支持从 `candidate_answers[0].answer` 读取。
+
 ## 当前限制
 
 - 当前仍是实验性原型，重点是流程和产品验证

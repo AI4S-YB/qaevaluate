@@ -71,6 +71,7 @@ def apply_legacy_migrations(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS llm_configs (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           name TEXT NOT NULL UNIQUE,
+          llm_use_case TEXT NOT NULL DEFAULT 'evaluation' CHECK(llm_use_case IN ('evaluation', 'trial')),
           provider_code TEXT NOT NULL DEFAULT 'custom_openai',
           provider_type TEXT NOT NULL CHECK(provider_type IN ('openai_compatible')),
           base_url TEXT NOT NULL,
@@ -121,15 +122,50 @@ def apply_legacy_migrations(conn: sqlite3.Connection) -> None:
     )
     ensure_column(conn, "qa_items", "technical_type_id INTEGER", "technical_type_id")
     ensure_column(conn, "qa_items", "business_tags_json TEXT", "business_tags_json")
+    ensure_column(conn, "qa_items", "metadata_json TEXT", "metadata_json")
+    ensure_column(conn, "qa_items", "source_model TEXT", "source_model")
     ensure_column(
         conn,
         "dataset_batches",
         "application_id INTEGER REFERENCES applications(id)",
         "application_id",
     )
+    ensure_column(conn, "dataset_batches", "source_batch_name TEXT", "source_batch_name")
+    ensure_column(conn, "dataset_batches", "external_batch_id TEXT", "external_batch_id")
     ensure_column(conn, "dataset_batches", "technical_type_id INTEGER", "technical_type_id")
     ensure_column(conn, "dataset_batches", "business_tags_json TEXT", "business_tags_json")
+    ensure_column(conn, "dataset_batches", "parse_lock_token TEXT", "parse_lock_token")
+    ensure_column(
+        conn,
+        "dataset_batches",
+        "parse_lock_acquired_at TEXT",
+        "parse_lock_acquired_at",
+    )
+    ensure_column(
+        conn,
+        "dataset_batches",
+        "uploader_user_id INTEGER REFERENCES users(id)",
+        "uploader_user_id",
+    )
+    ensure_column(
+        conn,
+        "dataset_batches",
+        "self_review_status TEXT NOT NULL DEFAULT 'none' CHECK(self_review_status IN ('none', 'queued', 'pending', 'in_progress', 'submitted'))",
+        "self_review_status",
+    )
+    ensure_column(
+        conn,
+        "dataset_batches",
+        "peer_review_status TEXT NOT NULL DEFAULT 'none' CHECK(peer_review_status IN ('none', 'queued', 'pending', 'in_progress', 'completed'))",
+        "peer_review_status",
+    )
     ensure_column(conn, "llm_configs", "last_tested_at TEXT", "last_tested_at")
+    ensure_column(
+        conn,
+        "llm_configs",
+        "llm_use_case TEXT NOT NULL DEFAULT 'evaluation' CHECK(llm_use_case IN ('evaluation', 'trial'))",
+        "llm_use_case",
+    )
     ensure_column(
         conn,
         "llm_configs",
@@ -141,6 +177,12 @@ def apply_legacy_migrations(conn: sqlite3.Connection) -> None:
         "llm_configs",
         "is_enabled INTEGER NOT NULL DEFAULT 1",
         "is_enabled",
+    )
+    ensure_column(
+        conn,
+        "llm_configs",
+        "is_trial_enabled INTEGER NOT NULL DEFAULT 0",
+        "is_trial_enabled",
     )
     ensure_column(
         conn,
@@ -180,6 +222,18 @@ def apply_legacy_migrations(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "llm_sessions", "llm_config_id INTEGER", "llm_config_id")
     ensure_column(conn, "llm_sessions", "llm_config_name TEXT", "llm_config_name")
     ensure_column(conn, "llm_sessions", "llm_model_name TEXT", "llm_model_name")
+    if table_exists(conn, "llm_configs") and column_exists(conn, "llm_configs", "llm_use_case"):
+        conn.execute(
+            """
+            UPDATE llm_configs
+            SET llm_use_case = CASE
+              WHEN COALESCE(is_trial_enabled, 0) = 1 THEN 'trial'
+              ELSE 'evaluation'
+            END
+            WHERE llm_use_case IS NULL
+               OR llm_use_case NOT IN ('evaluation', 'trial')
+            """
+        )
     conn.commit()
 
 

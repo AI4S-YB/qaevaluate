@@ -107,7 +107,7 @@ export default function ExpertProfilePage() {
     <div className="space-y-6">
       <div>
         <p className="text-sm text-muted-foreground">我的资料</p>
-        <h2 className="mt-2 font-serif text-4xl">维护领域场景与个人简介</h2>
+        <h2 className="mt-2 font-serif text-4xl">查看项目范围、领域场景与个人简介</h2>
       </div>
       <Card>
         <CardHeader>

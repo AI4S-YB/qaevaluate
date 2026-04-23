@@ -4,10 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   apiFetch,
+  type AdminImportBatchDetail,
   type AdminApplicationItem,
   type ImportBatch,
   type ImportFailure,
-  type ImportFailureDetail,
   type TaxonomyItem
 } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +30,21 @@ function parseBusinessTags(value: string | null) {
   } catch {
     return [];
   }
+}
+
+function uploaderGroupKey(batch: ImportBatch) {
+  return batch.uploader_user_id ? `user:${batch.uploader_user_id}` : "system";
+}
+
+function uploaderDisplayName(batch: ImportBatch) {
+  const label =
+    batch.uploader_full_name?.trim() ||
+    batch.uploader_username?.trim() ||
+    (batch.uploader_user_id ? `用户 ${batch.uploader_user_id}` : "平台管理员");
+  if (!batch.uploader_username || label.includes(`(${batch.uploader_username})`)) {
+    return label;
+  }
+  return `${label} (${batch.uploader_username})`;
 }
 
 const importExamples = {
@@ -112,12 +127,14 @@ export default function AdminImportsPage() {
   const [applications, setApplications] = useState<AdminApplicationItem[]>([]);
   const [technicalTypes, setTechnicalTypes] = useState<TaxonomyItem[]>([]);
   const [businessTags, setBusinessTags] = useState<TaxonomyItem[]>([]);
-  const [failureDetail, setFailureDetail] = useState<ImportFailureDetail | null>(null);
+  const [batchDetail, setBatchDetail] = useState<AdminImportBatchDetail | null>(null);
   const [selectedBatchId, setSelectedBatchId] = useState<number | null>(null);
   const [selectedFailureId, setSelectedFailureId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
-  const [loadingFailures, setLoadingFailures] = useState(false);
+  const [loadingDetail, setLoadingDetail] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [uploaderFilter, setUploaderFilter] = useState("all");
+  const [expandedUploaderKeys, setExpandedUploaderKeys] = useState<string[]>([]);
   const [name, setName] = useState("");
   const [source, setSource] = useState("");
   const [applicationId, setApplicationId] = useState("");
@@ -136,7 +153,7 @@ export default function AdminImportsPage() {
       setBatches(data);
       if (selectedBatchId && !data.some((batch) => batch.id === selectedBatchId)) {
         setSelectedBatchId(null);
-        setFailureDetail(null);
+        setBatchDetail(null);
         setSelectedFailureId(null);
       }
     } catch (err) {
@@ -161,18 +178,18 @@ export default function AdminImportsPage() {
     }
   }
 
-  async function loadFailures(batchId: number) {
-    setLoadingFailures(true);
+  async function loadBatchDetail(batchId: number) {
+    setLoadingDetail(true);
     setError(null);
     try {
-      const data = await apiFetch<ImportFailureDetail>(`/api/admin/imports/${batchId}/failures`);
-      setFailureDetail(data);
+      const data = await apiFetch<AdminImportBatchDetail>(`/api/admin/imports/${batchId}`);
+      setBatchDetail(data);
       setSelectedBatchId(batchId);
       setSelectedFailureId(data.failures[0]?.id ?? null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载失败明细失败");
+      setError(err instanceof Error ? err.message : "加载批次详情失败");
     } finally {
-      setLoadingFailures(false);
+      setLoadingDetail(false);
     }
   }
 
@@ -236,9 +253,81 @@ export default function AdminImportsPage() {
     void loadTaxonomy();
   }, []);
 
+  const uploaderOptions = useMemo(() => {
+    const map = new Map<string, { value: string; label: string }>();
+    for (const batch of batches) {
+      const uploaderId = batch.uploader_user_id;
+      if (!uploaderId) continue;
+      map.set(String(uploaderId), {
+        value: String(uploaderId),
+        label: uploaderDisplayName(batch)
+      });
+    }
+    return [...map.values()];
+  }, [batches]);
+
+  const filteredBatches = useMemo(() => {
+    if (uploaderFilter === "all") return batches;
+    return batches.filter((batch) => String(batch.uploader_user_id ?? "") === uploaderFilter);
+  }, [batches, uploaderFilter]);
+
+  const groupedBatches = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        key: string;
+        label: string;
+        batchCount: number;
+        totalCount: number;
+        parsedCount: number;
+        failedCount: number;
+        batches: ImportBatch[];
+      }
+    >();
+
+    for (const batch of filteredBatches) {
+      const key = uploaderGroupKey(batch);
+      const existing = groups.get(key);
+      if (existing) {
+        existing.batchCount += 1;
+        existing.totalCount += batch.total_count;
+        existing.parsedCount += batch.import_status === "parsed" ? 1 : 0;
+        existing.failedCount += batch.fail_count;
+        existing.batches.push(batch);
+        continue;
+      }
+      groups.set(key, {
+        key,
+        label: uploaderDisplayName(batch),
+        batchCount: 1,
+        totalCount: batch.total_count,
+        parsedCount: batch.import_status === "parsed" ? 1 : 0,
+        failedCount: batch.fail_count,
+        batches: [batch]
+      });
+    }
+
+    return [...groups.values()];
+  }, [filteredBatches]);
+
+  useEffect(() => {
+    const groupKeys = groupedBatches.map((group) => group.key);
+    setExpandedUploaderKeys((current) => {
+      if (groupKeys.length === 0) return [];
+      if (current.length === 0) return groupKeys;
+      const next = current.filter((key) => groupKeys.includes(key));
+      for (const key of groupKeys) {
+        if (!next.includes(key)) {
+          next.push(key);
+        }
+      }
+      return next;
+    });
+  }, [groupedBatches]);
+
   const selectedFailure =
-    failureDetail?.failures.find((item) => item.id === selectedFailureId) ??
-    failureDetail?.failures[0] ??
+    batchDetail?.failures.find((item) => item.id === selectedFailureId) ??
+    batchDetail?.failures[0] ??
     null;
   const batchesWithFailures = useMemo(
     () => batches.filter((batch) => batch.fail_count > 0),
@@ -248,6 +337,7 @@ export default function AdminImportsPage() {
     ? classifyImportError(selectedFailure.error_message)
     : null;
   const openExample = openExampleKey ? importExamples[openExampleKey] : null;
+  const selectedBatch = batchDetail?.batch ?? null;
 
   function handleDownloadExample(exampleKey: keyof typeof importExamples) {
     const example = importExamples[exampleKey];
@@ -260,6 +350,14 @@ export default function AdminImportsPage() {
     link.click();
     link.remove();
     window.URL.revokeObjectURL(url);
+  }
+
+  function toggleUploaderGroup(groupKey: string) {
+    setExpandedUploaderKeys((current) =>
+      current.includes(groupKey)
+        ? current.filter((key) => key !== groupKey)
+        : [...current, groupKey]
+    );
   }
 
   return (
@@ -390,10 +488,36 @@ export default function AdminImportsPage() {
         </Card>
         <Card>
           <CardHeader className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-            <CardTitle>导入批次</CardTitle>
-            <Button variant="secondary" onClick={() => void loadBatches()}>
-              刷新
-            </Button>
+            <div className="space-y-2">
+              <CardTitle>导入批次</CardTitle>
+              <p className="text-sm text-muted-foreground">管理员可按上传人查看所有专家上传批次</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <select
+                className="field min-w-[220px]"
+                value={uploaderFilter}
+                onChange={(event) => setUploaderFilter(event.target.value)}
+              >
+                <option value="all">全部上传人</option>
+                {uploaderOptions.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+              <Button
+                variant="secondary"
+                onClick={() => setExpandedUploaderKeys(groupedBatches.map((group) => group.key))}
+              >
+                全部展开
+              </Button>
+              <Button variant="secondary" onClick={() => setExpandedUploaderKeys([])}>
+                全部收起
+              </Button>
+              <Button variant="secondary" onClick={() => void loadBatches()}>
+                刷新
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="space-y-3">
             {error ? (
@@ -402,171 +526,250 @@ export default function AdminImportsPage() {
               </div>
             ) : null}
 
-            {!loading && batches.length === 0 ? (
+            {!loading && filteredBatches.length === 0 ? (
               <div className="rounded-[28px] border border-dashed border-border bg-stone-50 p-10 text-center text-sm text-muted-foreground">
-                当前没有导入批次。
+                当前筛选条件下没有导入批次。
               </div>
             ) : null}
 
-            {batches.map((batch) => (
-              <div
-                key={batch.id}
-                className="rounded-3xl border border-border bg-stone-50 p-4"
-              >
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                  <div>
-                    <p className="font-medium">{batch.name}</p>
-                    <p className="text-sm text-muted-foreground">
-                      {batch.source || "无来源说明"} / {statText(batch)}
-                    </p>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {batch.application_name ? (
-                        <Badge variant="default">{batch.application_name}</Badge>
-                      ) : null}
-                      {batch.technical_type_name ? (
-                        <Badge variant="warning">{batch.technical_type_name}</Badge>
-                      ) : null}
-                      {parseBusinessTags(batch.business_tags_json).map((tag) => (
-                        <Badge key={`${batch.id}-${tag}`} variant="muted">
-                          {tag}
-                        </Badge>
+            {groupedBatches.map((group) => {
+              const expanded = expandedUploaderKeys.includes(group.key);
+              return (
+                <div key={group.key} className="rounded-[24px] border border-border bg-stone-50">
+                  <div className="flex flex-col gap-3 border-b border-border px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <p className="font-medium">{group.label}</p>
+                      <p className="text-sm text-muted-foreground">
+                        批次 {group.batchCount} 个 / QA {group.totalCount} 条 / 已解析 {group.parsedCount} 个 /
+                        失败 {group.failedCount} 条
+                      </p>
+                    </div>
+                    <Button size="sm" variant="secondary" onClick={() => toggleUploaderGroup(group.key)}>
+                      {expanded ? "收起批次" : "展开批次"}
+                    </Button>
+                  </div>
+
+                  {expanded ? (
+                    <div className="space-y-3 p-4">
+                      {group.batches.map((batch) => (
+                        <div
+                          key={batch.id}
+                          className={`rounded-[20px] border p-4 ${
+                            selectedBatchId === batch.id
+                              ? "border-stone-900 bg-white shadow-sm"
+                              : "border-border bg-white"
+                          }`}
+                        >
+                          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                            <div>
+                              <p className="font-medium">{batch.name}</p>
+                              <p className="text-sm text-muted-foreground">
+                                {batch.source || "无来源说明"} / {statText(batch)}
+                              </p>
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {batch.application_name ? (
+                                  <Badge variant="default">{batch.application_name}</Badge>
+                                ) : null}
+                                {batch.technical_type_name ? (
+                                  <Badge variant="warning">{batch.technical_type_name}</Badge>
+                                ) : null}
+                                {batch.external_batch_id ? (
+                                  <Badge variant="muted">external: {batch.external_batch_id}</Badge>
+                                ) : null}
+                                {parseBusinessTags(batch.business_tags_json).map((tag) => (
+                                  <Badge key={`${batch.id}-${tag}`} variant="muted">
+                                    {tag}
+                                  </Badge>
+                                ))}
+                              </div>
+                              <p className="mt-2 text-sm text-muted-foreground">
+                                创建于 {formatTime(batch.created_at)}
+                              </p>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-3">
+                              <Badge
+                                variant={
+                                  batch.import_status === "parsed"
+                                    ? "success"
+                                    : batch.import_status === "uploaded"
+                                      ? "default"
+                                      : "warning"
+                                }
+                              >
+                                {batch.import_status}
+                              </Badge>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                disabled={parsingId === batch.id}
+                                onClick={() => void handleParse(batch.id)}
+                              >
+                                {parsingId === batch.id ? "提交中…" : "创建解析任务"}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant={selectedBatchId === batch.id ? "default" : "secondary"}
+                                onClick={() => void loadBatchDetail(batch.id)}
+                              >
+                                查看批次详情
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
                       ))}
                     </div>
-                    <p className="text-sm text-muted-foreground">
-                      创建于 {formatTime(batch.created_at)}
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-3">
-                    <Badge
-                      variant={
-                        batch.import_status === "parsed"
-                          ? "success"
-                          : batch.import_status === "uploaded"
-                            ? "default"
-                            : "warning"
-                      }
-                    >
-                      {batch.import_status}
-                    </Badge>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      disabled={parsingId === batch.id}
-                      onClick={() => void handleParse(batch.id)}
-                    >
-                      {parsingId === batch.id ? "提交中…" : "创建解析任务"}
-                    </Button>
-                    {batch.fail_count > 0 ? (
-                      <Button
-                        size="sm"
-                        variant={selectedBatchId === batch.id ? "default" : "secondary"}
-                        onClick={() => void loadFailures(batch.id)}
-                      >
-                        查看失败明细
-                      </Button>
-                    ) : null}
-                  </div>
+                  ) : null}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </CardContent>
         </Card>
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
+      <section className="grid gap-4 xl:grid-cols-[1.08fr_0.92fr]">
         <Card>
           <CardHeader className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <CardTitle>失败样本列表</CardTitle>
+              <CardTitle>批次 QA 明细</CardTitle>
               <p className="text-sm text-muted-foreground">
-                有失败记录的批次 {batchesWithFailures.length} 个
+                {selectedBatch
+                  ? `当前批次 ${selectedBatch.name} 共 ${batchDetail?.items.length ?? 0} 条 QA`
+                  : "先从上方选择一个批次"}
               </p>
             </div>
             {selectedBatchId ? (
               <Button
                 size="sm"
                 variant="secondary"
-                disabled={loadingFailures}
-                onClick={() => void loadFailures(selectedBatchId)}
+                disabled={loadingDetail}
+                onClick={() => void loadBatchDetail(selectedBatchId)}
               >
-                {loadingFailures ? "加载中…" : "刷新失败明细"}
+                {loadingDetail ? "加载中…" : "刷新批次详情"}
               </Button>
             ) : null}
           </CardHeader>
           <CardContent className="space-y-3">
             {!selectedBatchId ? (
               <div className="rounded-[28px] border border-dashed border-border bg-stone-50 p-8 text-center text-sm text-muted-foreground">
-                从上方批次中选择“查看失败明细”。
+                从上方批次中选择“查看批次详情”。
               </div>
             ) : null}
 
-            {selectedBatchId && failureDetail && failureDetail.failures.length === 0 ? (
+            {selectedBatch ? (
+              <div className="rounded-[28px] border border-border bg-stone-50 p-5">
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="default">{selectedBatch.application_name || "未绑定项目"}</Badge>
+                  {selectedBatch.technical_type_name ? (
+                    <Badge variant="warning">{selectedBatch.technical_type_name}</Badge>
+                  ) : null}
+                  <Badge variant="muted">
+                    上传人：
+                    {selectedBatch.uploader_full_name || selectedBatch.uploader_username || "管理员"}
+                  </Badge>
+                  {selectedBatch.external_batch_id ? (
+                    <Badge variant="muted">external: {selectedBatch.external_batch_id}</Badge>
+                  ) : null}
+                </div>
+                <p className="mt-3 text-sm text-muted-foreground">
+                  总计 {selectedBatch.total_count} / 成功 {selectedBatch.success_count} / 失败{" "}
+                  {selectedBatch.fail_count}
+                </p>
+              </div>
+            ) : null}
+
+            {selectedBatchId && batchDetail && batchDetail.items.length === 0 ? (
               <div className="rounded-[28px] border border-dashed border-border bg-stone-50 p-8 text-center text-sm text-muted-foreground">
-                该批次当前没有失败样本。
+                该批次当前还没有解析出 QA。
               </div>
             ) : null}
 
-            {failureDetail?.failures.map((failure: ImportFailure) => {
-              const selected = selectedFailure?.id === failure.id;
-              return (
-                <div
-                  key={failure.id}
-                  className={`cursor-pointer rounded-[28px] border p-4 transition ${
-                    selected
-                      ? "border-stone-900 bg-white shadow-sm"
-                      : "border-border bg-stone-50 hover:bg-white"
-                  }`}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => setSelectedFailureId(failure.id)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      setSelectedFailureId(failure.id);
-                    }
-                  }}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="font-medium">Row #{failure.row_no}</p>
-                      <p className="text-sm text-muted-foreground">
-                        {failure.external_id || "无 external_id"}
-                      </p>
-                    </div>
-                    <Badge variant="warning">failed</Badge>
-                  </div>
-                  <p className="mt-3 text-sm leading-7 text-muted-foreground">
-                    {failure.question_preview || "无问题摘要"}
+            {batchDetail?.items.map((item) => (
+              <div key={item.id} className="rounded-[24px] border border-border bg-stone-50 p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="muted">QA #{item.id}</Badge>
+                  {item.external_id ? <Badge variant="muted">{item.external_id}</Badge> : null}
+                  <Badge variant={item.review_task_submitted > 0 ? "success" : "default"}>
+                    评审 {item.review_task_submitted}/{item.review_task_total}
+                  </Badge>
+                </div>
+                <p className="mt-3 text-sm font-medium leading-7 text-foreground">
+                  {item.question_text}
+                </p>
+                {item.context_text ? (
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                    背景：{item.context_text}
+                  </p>
+                ) : null}
+                <div className="mt-3 rounded-[20px] border border-border bg-white p-4">
+                  <p className="text-xs uppercase tracking-[0.24em] text-muted-foreground">当前答案</p>
+                  <p className="mt-2 whitespace-pre-wrap text-sm leading-7 text-foreground">
+                    {item.current_answer_text || "当前无答案"}
                   </p>
                 </div>
-              );
-            })}
+              </div>
+            ))}
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>失败详情</CardTitle>
+            <CardTitle>失败样本与诊断</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            {!failureDetail ? (
+            {!batchDetail ? (
               <div className="rounded-[28px] border border-dashed border-border bg-stone-50 p-8 text-center text-sm text-muted-foreground">
-                选择失败批次后，这里展示错误原因和原始 payload。
+                选择批次后，这里展示失败样本、错误原因和原始 payload。
               </div>
             ) : (
               <>
                 <div className="rounded-[28px] border border-border bg-stone-50 p-5">
-                  <p className="font-medium">{failureDetail.batch.name}</p>
-                  {failureDetail.batch.application_name ? (
+                  <p className="font-medium">{batchDetail.batch.name}</p>
+                  {batchDetail.batch.application_name ? (
                     <div className="mt-3">
-                      <Badge variant="default">{failureDetail.batch.application_name}</Badge>
+                      <Badge variant="default">{batchDetail.batch.application_name}</Badge>
                     </div>
                   ) : null}
                   <p className="mt-2 text-sm text-muted-foreground">
-                    总计 {failureDetail.batch.total_count} / 成功 {failureDetail.batch.success_count} /
-                    失败 {failureDetail.batch.fail_count}
+                    总计 {batchDetail.batch.total_count} / 成功 {batchDetail.batch.success_count} / 失败{" "}
+                    {batchDetail.batch.fail_count}
                   </p>
                 </div>
+
+                {batchDetail.failures.map((failure: ImportFailure) => {
+                  const selected = selectedFailure?.id === failure.id;
+                  return (
+                    <div
+                      key={failure.id}
+                      className={`cursor-pointer rounded-[24px] border p-4 transition ${
+                        selected
+                          ? "border-stone-900 bg-white shadow-sm"
+                          : "border-border bg-stone-50 hover:bg-white"
+                      }`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedFailureId(failure.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setSelectedFailureId(failure.id);
+                        }
+                      }}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="font-medium">Row #{failure.row_no}</p>
+                          <p className="text-sm text-muted-foreground">
+                            {failure.external_id || "无 external_id"}
+                          </p>
+                        </div>
+                        <Badge variant="warning">failed</Badge>
+                      </div>
+                      <p className="mt-3 text-sm leading-7 text-muted-foreground">
+                        {failure.question_preview || "无问题摘要"}
+                      </p>
+                    </div>
+                  );
+                })}
 
                 {!selectedFailure ? (
                   <div className="rounded-[28px] border border-dashed border-border bg-stone-50 p-8 text-center text-sm text-muted-foreground">

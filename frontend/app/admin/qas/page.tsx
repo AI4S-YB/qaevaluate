@@ -19,6 +19,27 @@ function parseBusinessTags(value: string | null) {
   }
 }
 
+type QaMetadata = {
+  scene_code?: string;
+  scene_name?: string;
+  module_key?: string;
+  module_name?: string;
+  action_key?: string;
+  action_name?: string;
+  seed_group?: string;
+  cot_sequence_no?: number;
+};
+
+function parseQaMetadata(value: string | null) {
+  if (!value) return {} as QaMetadata;
+  try {
+    const parsed = JSON.parse(value) as QaMetadata;
+    return parsed && typeof parsed === "object" ? parsed : ({} as QaMetadata);
+  } catch {
+    return {} as QaMetadata;
+  }
+}
+
 function decisionVariant(value: string | null) {
   if (value === "pass") return "success";
   if (value === "rewrite") return "warning";
@@ -75,6 +96,8 @@ export default function AdminQasPage() {
   const [stateFilter, setStateFilter] = useState("all");
   const [technicalTypeFilter, setTechnicalTypeFilter] = useState("all");
   const [businessTagFilter, setBusinessTagFilter] = useState("all");
+  const [moduleFilter, setModuleFilter] = useState("all");
+  const [actionFilter, setActionFilter] = useState("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -109,10 +132,33 @@ export default function AdminQasPage() {
     void loadTaxonomy();
   }, []);
 
+  const moduleOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    qas.forEach((item) => {
+      const metadata = parseQaMetadata(item.metadata_json);
+      if (metadata.module_key && metadata.module_name) {
+        map.set(metadata.module_key, metadata.module_name);
+      }
+    });
+    return Array.from(map.entries()).map(([key, label]) => ({ key, label }));
+  }, [qas]);
+
+  const actionOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    qas.forEach((item) => {
+      const metadata = parseQaMetadata(item.metadata_json);
+      if (metadata.action_key && metadata.action_name) {
+        map.set(metadata.action_key, metadata.action_name);
+      }
+    });
+    return Array.from(map.entries()).map(([key, label]) => ({ key, label }));
+  }, [qas]);
+
   const filtered = useMemo(() => {
     const keyword = filter.trim().toLowerCase();
     return qas.filter((item) => {
       const operational = resolveOperationalState(item);
+      const metadata = parseQaMetadata(item.metadata_json);
       const matchedKeyword =
         !keyword ||
         item.application_name.toLowerCase().includes(keyword) ||
@@ -124,6 +170,9 @@ export default function AdminQasPage() {
         parseBusinessTags(item.business_tags_json).some((tag) =>
           tag.toLowerCase().includes(keyword)
         ) ||
+        (metadata.scene_name ?? "").toLowerCase().includes(keyword) ||
+        (metadata.module_name ?? "").toLowerCase().includes(keyword) ||
+        (metadata.action_name ?? "").toLowerCase().includes(keyword) ||
         operational.label.toLowerCase().includes(keyword);
       if (!matchedKeyword) return false;
       if (stateFilter !== "all" && operational.label !== stateFilter) return false;
@@ -136,9 +185,15 @@ export default function AdminQasPage() {
       ) {
         return false;
       }
+      if (moduleFilter !== "all" && metadata.module_key !== moduleFilter) {
+        return false;
+      }
+      if (actionFilter !== "all" && metadata.action_key !== actionFilter) {
+        return false;
+      }
       return true;
     });
-  }, [businessTagFilter, filter, qas, stateFilter, technicalTypeFilter]);
+  }, [actionFilter, businessTagFilter, filter, moduleFilter, qas, stateFilter, technicalTypeFilter]);
 
   const summary = useMemo(() => {
     return qas.reduce(
@@ -161,10 +216,10 @@ export default function AdminQasPage() {
           <p className="text-sm text-muted-foreground">QA 数据</p>
           <h2 className="mt-2 font-serif text-4xl">按聚合阶段分流查看问题、答案和最终确认状态</h2>
         </div>
-        <div className="flex gap-3">
+        <div className="grid gap-3 xl:grid-cols-[280px_180px_180px_220px_180px_120px]">
           <input
-            className="field max-w-[280px]"
-            placeholder="筛选应用、状态、结论或阶段"
+            className="field"
+            placeholder="筛选场景、模块、动作或阶段"
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
           />
@@ -181,7 +236,7 @@ export default function AdminQasPage() {
             ))}
           </select>
           <select
-            className="field min-w-[180px]"
+            className="field"
             value={businessTagFilter}
             onChange={(event) => setBusinessTagFilter(event.target.value)}
           >
@@ -189,6 +244,30 @@ export default function AdminQasPage() {
             {businessTags.map((item) => (
               <option key={item.id} value={item.code}>
                 {item.name}
+              </option>
+            ))}
+          </select>
+          <select
+            className="field"
+            value={moduleFilter}
+            onChange={(event) => setModuleFilter(event.target.value)}
+          >
+            <option value="all">全部研究模块</option>
+            {moduleOptions.map((item) => (
+              <option key={item.key} value={item.key}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+          <select
+            className="field"
+            value={actionFilter}
+            onChange={(event) => setActionFilter(event.target.value)}
+          >
+            <option value="all">全部推理动作</option>
+            {actionOptions.map((item) => (
+              <option key={item.key} value={item.key}>
+                {item.label}
               </option>
             ))}
           </select>
@@ -250,6 +329,7 @@ export default function AdminQasPage() {
 
           {filtered.map((item) => {
             const operational = resolveOperationalState(item);
+            const metadata = parseQaMetadata(item.metadata_json);
             return (
               <div
                 key={item.id}
@@ -262,6 +342,12 @@ export default function AdminQasPage() {
                       <Badge variant="muted">{item.application_name}</Badge>
                       {item.technical_type_name ? (
                         <Badge variant="warning">{item.technical_type_name}</Badge>
+                      ) : null}
+                      {metadata.module_name ? (
+                        <Badge variant="default">{metadata.module_name}</Badge>
+                      ) : null}
+                      {metadata.action_name ? (
+                        <Badge variant="muted">{metadata.action_name}</Badge>
                       ) : null}
                       <Badge variant={operational.variant}>{operational.label}</Badge>
                       <Badge variant={decisionVariant(item.final_decision)}>
@@ -278,6 +364,10 @@ export default function AdminQasPage() {
                       {operational.description}
                     </p>
                     <div className="flex flex-wrap gap-3 text-sm text-muted-foreground">
+                      <span>
+                        场景: {metadata.scene_name ?? parseBusinessTags(item.business_tags_json)[0] ?? "未标注"}
+                      </span>
+                      {metadata.cot_sequence_no ? <span>CoT 序号: {metadata.cot_sequence_no}</span> : null}
                       <span>QA 状态: {item.status}</span>
                       <span>评审人数: {item.review_count ?? 0}</span>
                       <span>

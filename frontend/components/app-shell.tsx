@@ -29,9 +29,9 @@ export function AppShell({
   return (
     <div className="min-h-screen bg-background bg-mesh text-foreground">
       <div className="mx-auto flex min-h-screen max-w-[1600px] gap-6 px-4 py-5 lg:px-6">
-        <aside className="hidden w-[280px] shrink-0 rounded-[30px] border border-white/70 bg-white/85 p-6 shadow-soft lg:block">
+        <aside className="hidden w-[280px] shrink-0 rounded-[14px] border border-white/70 bg-white/85 p-6 shadow-soft lg:block">
           <div className="mb-8 space-y-2">
-            <span className="inline-flex rounded-full bg-accent px-3 py-1 text-xs font-medium text-accent-foreground">
+            <span className="inline-flex rounded-md bg-accent px-3 py-1 text-xs font-medium text-accent-foreground">
               {roleLabel}
             </span>
             <div>
@@ -47,7 +47,7 @@ export function AppShell({
                 key={item.href}
                 href={item.href}
                 className={cn(
-                  "block rounded-2xl border border-transparent px-4 py-3 transition",
+                  "block rounded-md border border-transparent px-4 py-3 transition",
                   "hover:border-border hover:bg-stone-50"
                 )}
               >
@@ -58,7 +58,7 @@ export function AppShell({
           </nav>
         </aside>
         <main className="flex-1">
-          <div className="rounded-[30px] border border-white/70 bg-white/80 p-5 shadow-soft backdrop-blur lg:p-8">
+          <div className="rounded-[14px] border border-white/70 bg-white/80 p-5 shadow-soft backdrop-blur lg:p-8">
             <div className="mb-6 flex items-center justify-end">
               <AuthStatus />
             </div>

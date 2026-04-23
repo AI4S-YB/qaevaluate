@@ -19,6 +19,26 @@ function parseBusinessTags(value: string | null) {
   }
 }
 
+type QaMetadata = {
+  scene_code?: string;
+  scene_name?: string;
+  module_key?: string;
+  module_name?: string;
+  action_key?: string;
+  action_name?: string;
+  cot_sequence_no?: number;
+};
+
+function parseQaMetadata(value: string | null) {
+  if (!value) return {} as QaMetadata;
+  try {
+    const parsed = JSON.parse(value) as QaMetadata;
+    return parsed && typeof parsed === "object" ? parsed : ({} as QaMetadata);
+  } catch {
+    return {} as QaMetadata;
+  }
+}
+
 function taskTypeLabel(taskType: ExpertTaskListItem["task_type"]) {
   return taskType === "dispute_review" ? "争议复核" : "初评";
 }
@@ -59,6 +79,8 @@ export default function ExpertTasksPage() {
   const [statusFilter, setStatusFilter] = useState("pending_active");
   const [technicalTypeFilter, setTechnicalTypeFilter] = useState("all");
   const [businessTagFilter, setBusinessTagFilter] = useState("all");
+  const [moduleFilter, setModuleFilter] = useState("all");
+  const [actionFilter, setActionFilter] = useState("all");
 
   async function loadTasks() {
     setLoading(true);
@@ -88,10 +110,33 @@ export default function ExpertTasksPage() {
     void loadTaxonomy();
   }, []);
 
+  const moduleOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    tasks.forEach((task) => {
+      const metadata = parseQaMetadata(task.metadata_json);
+      if (metadata.module_key && metadata.module_name) {
+        map.set(metadata.module_key, metadata.module_name);
+      }
+    });
+    return Array.from(map.entries()).map(([key, label]) => ({ key, label }));
+  }, [tasks]);
+
+  const actionOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    tasks.forEach((task) => {
+      const metadata = parseQaMetadata(task.metadata_json);
+      if (metadata.action_key && metadata.action_name) {
+        map.set(metadata.action_key, metadata.action_name);
+      }
+    });
+    return Array.from(map.entries()).map(([key, label]) => ({ key, label }));
+  }, [tasks]);
+
   const filteredTasks = useMemo(() => {
     const keyword = filter.trim().toLowerCase();
     return [...tasks]
       .filter((task) => {
+      const metadata = parseQaMetadata(task.metadata_json);
       const matchedKeyword =
         !keyword ||
         task.application_name.toLowerCase().includes(keyword) ||
@@ -100,6 +145,9 @@ export default function ExpertTasksPage() {
         parseBusinessTags(task.business_tags_json).some((tag) =>
           tag.toLowerCase().includes(keyword)
         ) ||
+        (metadata.scene_name ?? "").toLowerCase().includes(keyword) ||
+        (metadata.module_name ?? "").toLowerCase().includes(keyword) ||
+        (metadata.action_name ?? "").toLowerCase().includes(keyword) ||
         taskStatusLabel(task.status).toLowerCase().includes(keyword);
       if (!matchedKeyword) return false;
       if (
@@ -124,6 +172,12 @@ export default function ExpertTasksPage() {
       ) {
         return false;
       }
+      if (moduleFilter !== "all" && metadata.module_key !== moduleFilter) {
+        return false;
+      }
+      if (actionFilter !== "all" && metadata.action_key !== actionFilter) {
+        return false;
+      }
       return true;
       })
       .sort((left, right) => {
@@ -136,7 +190,7 @@ export default function ExpertTasksPage() {
         };
         return priority(left) - priority(right) || right.id - left.id;
       });
-  }, [businessTagFilter, filter, statusFilter, tasks, technicalTypeFilter]);
+  }, [actionFilter, businessTagFilter, filter, moduleFilter, statusFilter, tasks, technicalTypeFilter]);
 
   return (
     <div className="space-y-6">
@@ -145,10 +199,10 @@ export default function ExpertTasksPage() {
           <p className="text-sm text-muted-foreground">任务列表</p>
           <h2 className="mt-2 font-serif text-4xl">先选领域场景和 QA 类型，再批量处理任务</h2>
         </div>
-        <div className="grid gap-3 lg:grid-cols-[1fr_180px_180px_160px_120px]">
+        <div className="grid gap-3 xl:grid-cols-[1fr_180px_180px_220px_180px_160px_120px]">
           <input
             className="field"
-            placeholder="搜索问题、项目或状态"
+            placeholder="搜索问题、场景、模块或状态"
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
           />
@@ -178,6 +232,30 @@ export default function ExpertTasksPage() {
           </select>
           <select
             className="field"
+            value={moduleFilter}
+            onChange={(event) => setModuleFilter(event.target.value)}
+          >
+            <option value="all">全部研究模块</option>
+            {moduleOptions.map((item) => (
+              <option key={item.key} value={item.key}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+          <select
+            className="field"
+            value={actionFilter}
+            onChange={(event) => setActionFilter(event.target.value)}
+          >
+            <option value="all">全部推理动作</option>
+            {actionOptions.map((item) => (
+              <option key={item.key} value={item.key}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+          <select
+            className="field"
             value={statusFilter}
             onChange={(event) => setStatusFilter(event.target.value)}
           >
@@ -197,6 +275,10 @@ export default function ExpertTasksPage() {
           <span>当前 {filteredTasks.length} 条任务</span>
           <span>·</span>
           <span>领域场景: {businessTagFilter === "all" ? "全部" : businessTagFilter}</span>
+          <span>·</span>
+          <span>模块: {moduleFilter === "all" ? "全部" : moduleOptions.find((item) => item.key === moduleFilter)?.label ?? moduleFilter}</span>
+          <span>·</span>
+          <span>动作: {actionFilter === "all" ? "全部" : actionOptions.find((item) => item.key === actionFilter)?.label ?? actionFilter}</span>
           <span>·</span>
           <span>QA 类型: {technicalTypeFilter === "all" ? "全部" : technicalTypeFilter}</span>
           <span>·</span>
@@ -249,6 +331,10 @@ export default function ExpertTasksPage() {
               key={task.id}
               className="grid gap-3 rounded-[18px] border border-border bg-stone-50 px-3 py-2.5 lg:grid-cols-[110px_140px_minmax(0,1fr)_90px_110px_80px] lg:items-center"
             >
+              {(() => {
+                const metadata = parseQaMetadata(task.metadata_json);
+                return (
+                  <>
               <div className="min-w-0">
                 <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
                   Task #{task.id}
@@ -264,10 +350,25 @@ export default function ExpertTasksPage() {
                     {task.technical_type_name}
                   </p>
                 ) : null}
+                {metadata.module_name ? (
+                  <p className="truncate text-xs text-muted-foreground">
+                    {metadata.module_name}
+                  </p>
+                ) : null}
               </div>
               <div className="min-w-0 space-y-1.5">
                 <p className="truncate text-sm font-medium">{task.question_summary}</p>
                 <div className="flex flex-wrap gap-2">
+                  {metadata.action_name ? (
+                    <Badge variant="default" className="px-2 py-0.5 text-[11px]">
+                      {metadata.action_name}
+                    </Badge>
+                  ) : null}
+                  {metadata.cot_sequence_no ? (
+                    <Badge variant="muted" className="px-2 py-0.5 text-[11px]">
+                      CoT {metadata.cot_sequence_no}
+                    </Badge>
+                  ) : null}
                   {compactTags(task.business_tags_json).visible.map((tag) => (
                     <Badge
                       key={`${task.id}-${tag}`}
@@ -305,6 +406,9 @@ export default function ExpertTasksPage() {
                   <Link href={`/expert/tasks/${task.id}` as Route}>打开</Link>
                 </Button>
               </div>
+                  </>
+                );
+              })()}
             </div>
           ))}
         </CardContent>

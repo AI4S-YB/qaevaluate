@@ -61,6 +61,7 @@ export type ExpertTaskListItem = {
   expires_at: string | null;
   application_name: string;
   business_tags_json: string | null;
+  metadata_json: string | null;
   technical_type_code: string | null;
   technical_type_name: string | null;
   question_summary: string;
@@ -112,6 +113,7 @@ export type TaskDetail = {
     context_text: string | null;
     tags_json: string | null;
     business_tags_json: string | null;
+    metadata_json: string | null;
     technical_type_code: string | null;
     technical_type_name: string | null;
     source: string | null;
@@ -186,10 +188,15 @@ export type ImportBatch = {
   id: number;
   name: string;
   source: string | null;
+  source_batch_name: string | null;
+  external_batch_id: string | null;
   file_path: string | null;
   import_status: "uploaded" | "parsed" | "failed";
   application_id: number | null;
   application_name: string | null;
+  uploader_user_id: number | null;
+  uploader_username: string | null;
+  uploader_full_name: string | null;
   business_tags_json: string | null;
   technical_type_code: string | null;
   technical_type_name: string | null;
@@ -216,6 +223,11 @@ export type ImportFailureDetail = {
     import_status: "uploaded" | "parsed" | "failed";
     application_id: number | null;
     application_name: string | null;
+    source_batch_name: string | null;
+    external_batch_id: string | null;
+    uploader_user_id: number | null;
+    uploader_username: string | null;
+    uploader_full_name: string | null;
     business_tags_json: string | null;
     technical_type_code: string | null;
     technical_type_name: string | null;
@@ -224,6 +236,122 @@ export type ImportFailureDetail = {
     fail_count: number;
   };
   failures: ImportFailure[];
+};
+
+export type AdminImportBatchDetail = {
+  batch: {
+    id: number;
+    name: string;
+    source: string | null;
+    source_batch_name: string | null;
+    external_batch_id: string | null;
+    file_path: string | null;
+    import_status: "uploaded" | "parsed" | "failed";
+    application_id: number | null;
+    application_name: string | null;
+    uploader_user_id: number | null;
+    uploader_username: string | null;
+    uploader_full_name: string | null;
+    business_tags_json: string | null;
+    technical_type_code: string | null;
+    technical_type_name: string | null;
+    total_count: number;
+    success_count: number;
+    fail_count: number;
+    self_review_status: "none" | "queued" | "pending" | "in_progress" | "submitted";
+    peer_review_status: "none" | "queued" | "pending" | "in_progress" | "completed";
+    created_at: string;
+  };
+  failures: ImportFailure[];
+  items: Array<{
+    id: number;
+    external_id: string | null;
+    status: string;
+    question_text: string;
+    question_summary: string;
+    context_text: string | null;
+    source: string | null;
+    source_model: string | null;
+    metadata_json: string | null;
+    current_answer_id: number | null;
+    current_answer_text: string | null;
+    review_task_total: number;
+    review_task_submitted: number;
+  }>;
+};
+
+export type ExpertImportBatch = {
+  id: number;
+  name: string;
+  source: string | null;
+  source_batch_name: string | null;
+  external_batch_id: string | null;
+  file_path: string | null;
+  import_status: "uploaded" | "parsed" | "failed";
+  application_id: number | null;
+  application_name: string | null;
+  business_tags_json: string | null;
+  technical_type_code: string | null;
+  technical_type_name: string | null;
+  uploader_user_id: number | null;
+  total_count: number;
+  success_count: number;
+  fail_count: number;
+  self_review_status: "none" | "queued" | "pending" | "in_progress" | "submitted";
+  peer_review_status: "none" | "queued" | "pending" | "in_progress" | "completed";
+  self_review_total: number;
+  self_review_submitted: number;
+  peer_review_total: number;
+  peer_review_submitted: number;
+  created_at: string;
+};
+
+export type ExpertImportBatchDetail = {
+  batch: Omit<
+    ExpertImportBatch,
+    "self_review_total" | "self_review_submitted" | "peer_review_total" | "peer_review_submitted"
+  >;
+  failures: ImportFailure[];
+  items: Array<{
+    id: number;
+    external_id: string | null;
+    status: string;
+    question_text: string;
+    question_summary: string;
+    source: string | null;
+    source_model: string | null;
+    metadata_json: string | null;
+    current_answer_id: number | null;
+    current_answer_text: string | null;
+    self_review_task_status: string | null;
+    peer_review_total: number;
+    peer_review_submitted: number;
+  }>;
+};
+
+export type ExpertImportPushPayload = {
+  name: string;
+  source: string;
+  source_batch_name?: string;
+  external_batch_id?: string;
+  application_id: number;
+  technical_type_code: string;
+  business_tag_codes: string[];
+  rows: Array<{
+    id?: string;
+    question: string;
+    answer?: string;
+    context?: string;
+    difficulty?: string;
+    source?: string;
+    model?: string;
+    metadata?: Record<string, unknown>;
+    candidate_answers?: Array<{
+      answer: string;
+    }>;
+  }>;
+  auto_parse?: boolean;
+  create_self_review?: boolean;
 };
 
 export type ApplicationItem = {
@@ -242,12 +370,23 @@ export type AdminApplicationItem = ApplicationItem & {
   expert_count: number;
 };
 
+export type AdminApplicationBusinessTagItem = {
+  id: number;
+  code: string;
+  name: string;
+  qa_count: number;
+  reviewed_qas: number;
+  closed_qas: number;
+  expert_count: number;
+};
+
 export type QaListItem = {
   id: number;
   external_id: string | null;
   status: string;
   application_name: string;
   business_tags_json: string | null;
+  metadata_json: string | null;
   technical_type_code: string | null;
   technical_type_name: string | null;
   review_count: number | null;
@@ -267,6 +406,7 @@ export type QaDetail = {
     status: string;
     application_name: string;
     business_tags_json?: string | null;
+    metadata_json?: string | null;
     technical_type_code?: string | null;
     technical_type_name?: string | null;
   };
@@ -451,11 +591,18 @@ export type TaxonomyItem = {
   is_active: boolean;
   sort_order: number;
   created_at: string;
+  qa_count?: number;
+};
+
+export type ExpertTaxonomy = {
+  technical_types: TaxonomyItem[];
+  business_tags: TaxonomyItem[];
 };
 
 export type LlmConfigItem = {
   id: number;
   name: string;
+  llm_use_case: "evaluation" | "trial";
   provider_code: string;
   provider_type: "openai_compatible";
   base_url: string;
@@ -464,6 +611,7 @@ export type LlmConfigItem = {
   temperature: number;
   is_enabled: boolean;
   is_active: boolean;
+  is_trial_enabled: boolean;
   created_at: string;
   updated_at: string;
   api_key_masked: string;
@@ -484,6 +632,67 @@ export type ExpertLlmConfigOption = {
   has_api_key: boolean;
   last_tested_at: string | null;
   last_test_status: "passed" | "failed" | null;
+};
+
+export type TrialLlmConfigOption = {
+  id: number;
+  name: string;
+  provider_code: string;
+  model_name: string;
+  is_enabled: boolean;
+  is_trial_enabled: boolean;
+  has_api_key: boolean;
+  last_tested_at: string | null;
+  last_test_status: "passed" | "failed" | null;
+};
+
+export type TrialSourceItem = {
+  qa_item_id: number;
+  answer_id: number;
+  question_text: string;
+  answer_text: string;
+  context_text: string | null;
+  application_name: string;
+  technical_type_code: string | null;
+  technical_type_name: string | null;
+  task_type: "initial_review" | "dispute_review" | "final_confirm";
+  task_status: string;
+  updated_at: string;
+  question_summary: string;
+};
+
+export type TrialSessionListItem = {
+  id: number;
+  llm_config_id: number;
+  llm_config_name: string | null;
+  llm_model_name: string | null;
+  title: string;
+  status: "active" | "completed" | "failed";
+  created_at: string;
+  updated_at: string;
+};
+
+export type TrialMessage = {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+};
+
+export type TrialSessionDetail = {
+  session: TrialSessionListItem;
+  source: {
+    qa_item_id: number;
+    answer_id: number | null;
+    question_text: string;
+    answer_text: string | null;
+    context_text: string | null;
+    application_name: string | null;
+    technical_type_code: string | null;
+    technical_type_name: string | null;
+    question_summary: string;
+  } | null;
+  messages: TrialMessage[];
 };
 
 export type AdminSystemStatus = {

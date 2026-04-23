@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from argparse import ArgumentParser
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import shutil
 import time
 from typing import Dict, Optional
+from uuid import uuid4
 
 from .config import EXPORT_DIR, QUEUE_DIR
 from .db import db_cursor, init_db
@@ -33,6 +34,60 @@ def save_json(path: Path, payload: dict) -> None:
     path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
+    )
+
+
+IMPORT_PARSE_LOCK_TIMEOUT = timedelta(minutes=30)
+
+
+def stale_import_lock_before_iso() -> str:
+    return (datetime.utcnow() - IMPORT_PARSE_LOCK_TIMEOUT).replace(microsecond=0).isoformat()
+
+
+def claim_import_batch_lock(cursor, batch_id: int) -> Optional[str]:
+    lock_token = uuid4().hex
+    locked_at = now_iso()
+    cursor.execute(
+        """
+        UPDATE dataset_batches
+        SET parse_lock_token = ?, parse_lock_acquired_at = ?
+        WHERE id = ?
+          AND import_status != 'parsed'
+          AND (
+            parse_lock_token IS NULL
+            OR parse_lock_token = ''
+            OR parse_lock_acquired_at IS NULL
+            OR parse_lock_acquired_at < ?
+          )
+        """,
+        (lock_token, locked_at, batch_id, stale_import_lock_before_iso()),
+    )
+    if cursor.rowcount:
+        return lock_token
+    return None
+
+
+def release_import_batch_lock(cursor, batch_id: int, lock_token: str) -> None:
+    cursor.execute(
+        """
+        UPDATE dataset_batches
+        SET parse_lock_token = NULL, parse_lock_acquired_at = NULL
+        WHERE id = ? AND parse_lock_token = ?
+        """,
+        (batch_id, lock_token),
+    )
+
+
+def mark_import_batch_failed(cursor, batch_id: int) -> None:
+    cursor.execute(
+        """
+        UPDATE dataset_batches
+        SET import_status = 'failed',
+            parse_lock_token = NULL,
+            parse_lock_acquired_at = NULL
+        WHERE id = ?
+        """,
+        (batch_id,),
     )
 
 
@@ -98,6 +153,55 @@ def load_application_experts(cursor, application_id: int) -> dict[int, dict]:
     return experts
 
 
+def create_self_review_tasks_for_batch(cursor, batch_id: int, uploader_user_id: int) -> int:
+    rows = cursor.execute(
+        """
+        SELECT
+          q.id AS qa_item_id,
+          ans.id AS answer_id
+        FROM qa_items q
+        JOIN qa_answers ans ON ans.qa_item_id = q.id
+        WHERE q.dataset_batch_id = ?
+          AND ans.is_current = 1
+        ORDER BY q.id ASC, ans.id ASC
+        """,
+        (batch_id,),
+    ).fetchall()
+
+    created_count = 0
+    for row in rows:
+        existing = cursor.execute(
+            """
+            SELECT id
+            FROM evaluation_tasks
+            WHERE qa_item_id = ?
+              AND answer_id = ?
+              AND expert_user_id = ?
+              AND round_no = 1
+              AND task_type = 'initial_review'
+            """,
+            (row["qa_item_id"], row["answer_id"], uploader_user_id),
+        ).fetchone()
+        if existing:
+            continue
+        cursor.execute(
+            """
+            INSERT INTO evaluation_tasks (
+              qa_item_id, answer_id, expert_user_id, round_no,
+              task_type, status, assigned_at
+            ) VALUES (?, ?, ?, 1, 'initial_review', 'pending', ?)
+            """,
+            (row["qa_item_id"], row["answer_id"], uploader_user_id, now_iso()),
+        )
+        cursor.execute(
+            "UPDATE qa_items SET status = 'in_review' WHERE id = ?",
+            (row["qa_item_id"],),
+        )
+        created_count += 1
+
+    return created_count
+
+
 def move_job(path: Path, target_dir: str) -> Path:
     destination = QUEUE_DIR / target_dir / path.name
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -115,129 +219,160 @@ def get_next_job() -> Optional[Path]:
 
 
 def import_batch(batch_id: int) -> None:
-    with db_cursor() as cursor:
-        batch = cursor.execute(
-            """
-            SELECT
-              b.id,
-              b.file_path,
-              b.application_id,
-              b.business_tags_json,
-              a.name AS application_name,
-              tt.id AS technical_type_id,
-              tt.code AS technical_type_code
-            FROM dataset_batches b
-            LEFT JOIN applications a ON a.id = b.application_id
-            LEFT JOIN technical_types tt ON tt.id = b.technical_type_id
-            WHERE b.id = ?
-            """,
-            (batch_id,),
-        ).fetchone()
-        if not batch:
-            raise ValueError(f"batch {batch_id} not found")
-        if not batch["application_id"] or not batch["application_name"]:
-            raise ValueError("batch application not configured")
-        if not batch["technical_type_id"] or not batch["technical_type_code"]:
-            raise ValueError("batch technical_type not configured")
-        batch_business_tags = parse_business_tag_codes(batch["business_tags_json"])
-        rows = json.loads(Path(batch["file_path"]).read_text(encoding="utf-8"))
-        if not isinstance(rows, list):
-            raise ValueError("import file must be a JSON array")
+    lock_token: Optional[str] = None
+    try:
+        with db_cursor() as cursor:
+            batch = cursor.execute(
+                """
+                SELECT
+                  b.id,
+                  b.file_path,
+                  b.application_id,
+                  b.business_tags_json,
+                  b.uploader_user_id,
+                  b.self_review_status,
+                  b.import_status,
+                  a.name AS application_name,
+                  tt.id AS technical_type_id,
+                  tt.code AS technical_type_code
+                FROM dataset_batches b
+                LEFT JOIN applications a ON a.id = b.application_id
+                LEFT JOIN technical_types tt ON tt.id = b.technical_type_id
+                WHERE b.id = ?
+                """,
+                (batch_id,),
+            ).fetchone()
+            if not batch:
+                raise ValueError(f"batch {batch_id} not found")
+            if batch["import_status"] == "parsed":
+                return
+            lock_token = claim_import_batch_lock(cursor, batch_id)
+            if not lock_token:
+                return
+            if not batch["application_id"] or not batch["application_name"]:
+                raise ValueError("batch application not configured")
+            if not batch["technical_type_id"] or not batch["technical_type_code"]:
+                raise ValueError("batch technical_type not configured")
+            batch_business_tags = parse_business_tag_codes(batch["business_tags_json"])
+            rows = json.loads(Path(batch["file_path"]).read_text(encoding="utf-8"))
+            if not isinstance(rows, list):
+                raise ValueError("import file must be a JSON array")
 
-        success_count = 0
-        fail_count = 0
-        total_count = len(rows)
-        cursor.execute(
-            "DELETE FROM dataset_batch_failures WHERE dataset_batch_id = ?",
-            (batch_id,),
-        )
+            success_count = 0
+            fail_count = 0
+            total_count = len(rows)
+            cursor.execute(
+                "DELETE FROM dataset_batch_failures WHERE dataset_batch_id = ?",
+                (batch_id,),
+            )
 
-        for index, item in enumerate(rows, start=1):
-            try:
-                if not isinstance(item, dict):
-                    raise ValueError("row must be a JSON object")
-                question = item["question"]
-                answer = item.get("answer")
-                if not answer and item.get("candidate_answers"):
-                    answer = item["candidate_answers"][0]["answer"]
-                if not answer:
-                    raise ValueError("missing answer")
+            for index, item in enumerate(rows, start=1):
+                try:
+                    if not isinstance(item, dict):
+                        raise ValueError("row must be a JSON object")
+                    question = item["question"]
+                    answer = item.get("answer")
+                    if not answer and item.get("candidate_answers"):
+                        answer = item["candidate_answers"][0]["answer"]
+                    if not answer:
+                        raise ValueError("missing answer")
 
-                cursor.execute(
-                    """
-                    INSERT INTO qa_items (
-                      external_id, technical_type_id, business_tags_json, application_id,
-                      dataset_batch_id, question_text, context_text, tags_json,
-                      difficulty, source, status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
-                    """,
-                    (
-                        item.get("id"),
-                        batch["technical_type_id"],
-                        json.dumps(sorted(batch_business_tags), ensure_ascii=False),
-                        batch["application_id"],
-                        batch_id,
-                        question,
-                        item.get("context"),
-                        json.dumps(sorted(batch_business_tags), ensure_ascii=False),
-                        item.get("difficulty"),
-                        item.get("source"),
-                        now_iso(),
-                    ),
-                )
-                qa_item_id = int(cursor.lastrowid)
-                cursor.execute(
-                    """
-                    INSERT INTO qa_answers (
-                      qa_item_id, answer_text, answer_type, source_model,
-                      source_user_id, parent_answer_id, version_no, is_current, created_at
-                    ) VALUES (?, ?, 'imported_candidate', ?, NULL, NULL, 1, 1, ?)
-                    """,
-                    (
-                        qa_item_id,
-                        answer,
-                        item.get("model"),
-                        now_iso(),
-                    ),
-                )
-                success_count += 1
-            except Exception as exc:
-                fail_count += 1
-                cursor.execute(
-                    """
-                    INSERT INTO dataset_batch_failures (
-                      dataset_batch_id, row_no, external_id, question_preview,
-                      error_message, raw_payload_json, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        batch_id,
-                        index,
-                        item.get("id") if isinstance(item, dict) else None,
+                    cursor.execute(
+                        """
+                        INSERT INTO qa_items (
+                          external_id, technical_type_id, business_tags_json, application_id,
+                          dataset_batch_id, question_text, context_text, metadata_json, tags_json,
+                          difficulty, source, source_model, status, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+                        """,
                         (
-                            str(item.get("question", ""))[:120]
-                            if isinstance(item, dict)
-                            else str(item)[:120]
+                            item.get("id"),
+                            batch["technical_type_id"],
+                            json.dumps(sorted(batch_business_tags), ensure_ascii=False),
+                            batch["application_id"],
+                            batch_id,
+                            question,
+                            item.get("context"),
+                            json.dumps(item.get("metadata"), ensure_ascii=False)
+                            if isinstance(item.get("metadata"), dict)
+                            else None,
+                            json.dumps(sorted(batch_business_tags), ensure_ascii=False),
+                            item.get("difficulty"),
+                            item.get("source"),
+                            item.get("model"),
+                            now_iso(),
                         ),
-                        str(exc),
-                        json.dumps(item, ensure_ascii=False)
-                        if isinstance(item, (dict, list))
-                        else json.dumps({"raw_value": item}, ensure_ascii=False),
-                        now_iso(),
-                    ),
-                )
+                    )
+                    qa_item_id = int(cursor.lastrowid)
+                    cursor.execute(
+                        """
+                        INSERT INTO qa_answers (
+                          qa_item_id, answer_text, answer_type, source_model,
+                          source_user_id, parent_answer_id, version_no, is_current, created_at
+                        ) VALUES (?, ?, 'imported_candidate', ?, NULL, NULL, 1, 1, ?)
+                        """,
+                        (
+                            qa_item_id,
+                            answer,
+                            item.get("model"),
+                            now_iso(),
+                        ),
+                    )
+                    success_count += 1
+                except Exception as exc:
+                    fail_count += 1
+                    cursor.execute(
+                        """
+                        INSERT INTO dataset_batch_failures (
+                          dataset_batch_id, row_no, external_id, question_preview,
+                          error_message, raw_payload_json, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            batch_id,
+                            index,
+                            item.get("id") if isinstance(item, dict) else None,
+                            (
+                                str(item.get("question", ""))[:120]
+                                if isinstance(item, dict)
+                                else str(item)[:120]
+                            ),
+                            str(exc),
+                            json.dumps(item, ensure_ascii=False)
+                            if isinstance(item, (dict, list))
+                            else json.dumps({"raw_value": item}, ensure_ascii=False),
+                            now_iso(),
+                        ),
+                    )
 
-        cursor.execute(
-            """
-            UPDATE dataset_batches
-            SET import_status = 'parsed',
-                total_count = ?,
-                success_count = ?,
-                fail_count = ?
-            WHERE id = ?
-            """,
-            (total_count, success_count, fail_count, batch_id),
-        )
+            cursor.execute(
+                """
+                UPDATE dataset_batches
+                SET import_status = 'parsed',
+                    total_count = ?,
+                    success_count = ?,
+                    fail_count = ?
+                WHERE id = ?
+                """,
+                (total_count, success_count, fail_count, batch_id),
+            )
+            if batch["uploader_user_id"] is not None and batch["self_review_status"] == "queued":
+                create_self_review_tasks_for_batch(cursor, batch_id, int(batch["uploader_user_id"]))
+                cursor.execute(
+                    """
+                    UPDATE dataset_batches
+                    SET self_review_status = CASE WHEN success_count > 0 THEN 'pending' ELSE 'none' END
+                    WHERE id = ?
+                    """,
+                    (batch_id,),
+                )
+            release_import_batch_lock(cursor, batch_id, lock_token)
+            lock_token = None
+    except Exception:
+        if lock_token:
+            with db_cursor() as cursor:
+                mark_import_batch_failed(cursor, batch_id)
+        raise
 
 
 def dispatch_tasks(application_id: int, limit: int) -> None:

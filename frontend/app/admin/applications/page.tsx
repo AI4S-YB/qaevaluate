@@ -2,7 +2,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-import { apiFetch, type AdminApplicationItem } from "@/lib/api";
+import {
+  apiFetch,
+  type AdminApplicationBusinessTagItem,
+  type AdminApplicationItem
+} from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,6 +18,9 @@ export default function AdminApplicationsPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [updatingId, setUpdatingId] = useState<number | null>(null);
+  const [expandedApplicationId, setExpandedApplicationId] = useState<number | null>(null);
+  const [loadingScenesId, setLoadingScenesId] = useState<number | null>(null);
+  const [sceneMap, setSceneMap] = useState<Record<number, AdminApplicationBusinessTagItem[]>>({});
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -24,7 +31,7 @@ export default function AdminApplicationsPage() {
       const data = await apiFetch<AdminApplicationItem[]>("/api/admin/applications");
       setApplications(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载应用失败");
+      setError(err instanceof Error ? err.message : "加载项目失败");
     } finally {
       setLoading(false);
     }
@@ -32,7 +39,7 @@ export default function AdminApplicationsPage() {
 
   async function handleCreate() {
     if (!name.trim()) {
-      setError("应用名称不能为空");
+      setError("项目名称不能为空");
       return;
     }
     setSubmitting(true);
@@ -49,10 +56,10 @@ export default function AdminApplicationsPage() {
       });
       setName("");
       setDescription("");
-      setNotice("应用已创建。");
+      setNotice("项目已创建。");
       await loadApplications();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "创建应用失败");
+      setError(err instanceof Error ? err.message : "创建项目失败");
     } finally {
       setSubmitting(false);
     }
@@ -73,14 +80,36 @@ export default function AdminApplicationsPage() {
       });
       setNotice(
         !application.is_active
-          ? `已启用应用 ${application.name}。`
-          : `已停用应用 ${application.name}。`
+          ? `已启用项目 ${application.name}。`
+          : `已停用项目 ${application.name}。`
       );
       await loadApplications();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "更新应用状态失败");
+      setError(err instanceof Error ? err.message : "更新项目状态失败");
     } finally {
       setUpdatingId(null);
+    }
+  }
+
+  async function toggleScenes(applicationId: number) {
+    if (expandedApplicationId === applicationId) {
+      setExpandedApplicationId(null);
+      return;
+    }
+    setExpandedApplicationId(applicationId);
+    if (sceneMap[applicationId]) {
+      return;
+    }
+    setLoadingScenesId(applicationId);
+    try {
+      const data = await apiFetch<AdminApplicationBusinessTagItem[]>(
+        `/api/admin/applications/${applicationId}/business-tags`
+      );
+      setSceneMap((current) => ({ ...current, [applicationId]: data }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载领域场景统计失败");
+    } finally {
+      setLoadingScenesId(null);
     }
   }
 
@@ -106,8 +135,8 @@ export default function AdminApplicationsPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <p className="text-sm text-muted-foreground">应用管理</p>
-          <h2 className="mt-2 font-serif text-4xl">查看每个应用的题量、闭环进度和专家覆盖情况</h2>
+          <p className="text-sm text-muted-foreground">项目管理</p>
+          <h2 className="mt-2 font-serif text-4xl">查看每个项目的题量、闭环进度和专家覆盖情况</h2>
         </div>
         <Button variant="secondary" onClick={() => void loadApplications()}>
           刷新列表
@@ -127,7 +156,7 @@ export default function AdminApplicationsPage() {
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {[
-          ["应用总数", summary.total],
+          ["项目总数", summary.total],
           ["启用中", summary.active],
           ["QA 总量", summary.totalQas],
           ["已闭环 QA", summary.closedQas]
@@ -144,38 +173,38 @@ export default function AdminApplicationsPage() {
       <section className="grid gap-4 xl:grid-cols-[0.82fr_1.18fr]">
         <Card>
           <CardHeader>
-            <CardTitle>新建应用</CardTitle>
+            <CardTitle>新建项目</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <input
               className="field"
-              placeholder="应用名称"
+              placeholder="项目名称"
               value={name}
               onChange={(event) => setName(event.target.value)}
             />
             <textarea
               className="field-textarea"
-              placeholder="应用描述"
+              placeholder="项目描述"
               value={description}
               onChange={(event) => setDescription(event.target.value)}
             />
             <div className="rounded-[28px] border border-dashed border-border bg-stone-50 p-4 text-sm leading-7 text-muted-foreground">
-              应用是分发边界。专家配置、QA 统计和导出筛选都会围绕应用聚合。
+              项目是当前平台的组织边界。专家配置、QA 统计和导出筛选都会围绕项目聚合。
             </div>
             <Button disabled={submitting} onClick={() => void handleCreate()}>
-              {submitting ? "创建中…" : "新建应用"}
+              {submitting ? "创建中…" : "新建项目"}
             </Button>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>应用运营概览</CardTitle>
+            <CardTitle>项目运营概览</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             {!loading && applications.length === 0 ? (
               <div className="rounded-[28px] border border-dashed border-border bg-stone-50 p-10 text-center text-sm text-muted-foreground">
-                当前还没有应用。
+                当前还没有项目。
               </div>
             ) : null}
 
@@ -208,6 +237,18 @@ export default function AdminApplicationsPage() {
                   <div className="flex gap-3">
                     <Button
                       size="sm"
+                      variant={expandedApplicationId === application.id ? "default" : "secondary"}
+                      disabled={loadingScenesId === application.id}
+                      onClick={() => void toggleScenes(application.id)}
+                    >
+                      {loadingScenesId === application.id
+                        ? "加载中…"
+                        : expandedApplicationId === application.id
+                          ? "收起场景"
+                          : "查看场景"}
+                    </Button>
+                    <Button
+                      size="sm"
                       variant="secondary"
                       disabled={updatingId === application.id}
                       onClick={() => void handleToggle(application)}
@@ -220,6 +261,41 @@ export default function AdminApplicationsPage() {
                     </Button>
                   </div>
                 </div>
+
+                {expandedApplicationId === application.id ? (
+                  <div className="mt-4 border-t border-border pt-4">
+                    <div className="mb-3 flex items-center justify-between">
+                      <p className="text-sm font-medium">领域场景覆盖</p>
+                      <p className="text-xs text-muted-foreground">
+                        展示当前项目下已经有实际 QA 的场景
+                      </p>
+                    </div>
+                    {sceneMap[application.id] && sceneMap[application.id].length > 0 ? (
+                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                        {sceneMap[application.id].map((scene) => (
+                          <div
+                            key={scene.id}
+                            className="rounded-[20px] border border-border bg-white p-4"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <p className="font-medium">{scene.name}</p>
+                              <Badge variant="warning">{scene.expert_count} 位专家</Badge>
+                            </div>
+                            <div className="mt-3 space-y-1 text-sm text-muted-foreground">
+                              <p>QA 总量: {scene.qa_count}</p>
+                              <p>已评测量: {scene.reviewed_qas}</p>
+                              <p>已闭环量: {scene.closed_qas}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="rounded-[20px] border border-dashed border-border bg-white p-6 text-sm text-muted-foreground">
+                        当前项目下还没有可展示的领域场景统计。
+                      </div>
+                    )}
+                  </div>
+                ) : null}
               </div>
             ))}
           </CardContent>

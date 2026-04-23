@@ -87,10 +87,10 @@ def get_llm_config(config_id: Optional[int] = None) -> dict:
             config = cursor.execute(
                 """
                 SELECT
-                  id, name, provider_code, provider_type, base_url, api_key,
-                  model_name, system_prompt, temperature, is_enabled, is_active
+                  id, name, llm_use_case, provider_code, provider_type, base_url, api_key,
+                  model_name, system_prompt, temperature, is_enabled, is_active, is_trial_enabled
                 FROM llm_configs
-                WHERE is_active = 1
+                WHERE is_active = 1 AND llm_use_case = 'evaluation'
                 ORDER BY id DESC
                 LIMIT 1
                 """
@@ -99,8 +99,8 @@ def get_llm_config(config_id: Optional[int] = None) -> dict:
             config = cursor.execute(
                 """
                 SELECT
-                  id, name, provider_code, provider_type, base_url, api_key,
-                  model_name, system_prompt, temperature, is_enabled, is_active
+                  id, name, llm_use_case, provider_code, provider_type, base_url, api_key,
+                  model_name, system_prompt, temperature, is_enabled, is_active, is_trial_enabled
                 FROM llm_configs
                 WHERE id = ?
                 LIMIT 1
@@ -111,6 +111,8 @@ def get_llm_config(config_id: Optional[int] = None) -> dict:
         raise HTTPException(status_code=400, detail="no primary llm config")
     if not bool(config["is_enabled"]):
         raise HTTPException(status_code=400, detail="selected llm config is disabled")
+    if (config["llm_use_case"] or "evaluation") != "evaluation":
+        raise HTTPException(status_code=400, detail="selected llm config is reserved for model trial only")
     api_key = get_llm_api_key(int(config["id"]), config["api_key"])
     if not api_key:
         raise HTTPException(status_code=400, detail="selected llm config missing local api key")
@@ -120,6 +122,7 @@ def get_llm_config(config_id: Optional[int] = None) -> dict:
         **dict(config),
         "is_enabled": bool(config["is_enabled"]),
         "is_active": bool(config["is_active"]),
+        "is_trial_enabled": bool(config["is_trial_enabled"]),
         "resolved_api_key": api_key,
     }
 
@@ -186,11 +189,13 @@ def list_available_llm_configs(
               model_name,
               is_enabled,
               is_active,
+              llm_use_case,
+              is_trial_enabled,
               api_key,
               last_tested_at,
               last_test_status
             FROM llm_configs
-            WHERE is_enabled = 1
+            WHERE is_enabled = 1 AND llm_use_case = 'evaluation'
             ORDER BY is_active DESC, id DESC
             """
         ).fetchall()

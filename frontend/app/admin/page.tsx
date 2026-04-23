@@ -75,7 +75,7 @@ export default function AdminDashboardPage() {
       <section className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
         <Card>
           <CardHeader>
-            <CardTitle>应用进度</CardTitle>
+            <CardTitle>项目进度</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             {dashboard?.application_progress.map((application) => (
@@ -104,7 +104,7 @@ export default function AdminDashboardPage() {
             ))}
             {!dashboard || dashboard.application_progress.length === 0 ? (
               <div className="rounded-3xl border border-dashed border-border bg-stone-50 p-8 text-center text-sm text-muted-foreground">
-                当前没有应用进度数据。
+                当前没有项目进度数据。
               </div>
             ) : null}
           </CardContent>

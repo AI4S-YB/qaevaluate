@@ -29,7 +29,9 @@ export default function AdminExpertsPage() {
         apiFetch<TaxonomyItem[]>("/api/admin/business-tags")
       ]);
       setExperts(expertList);
-      setBusinessTags(businessTagList.filter((item) => item.is_active));
+      setBusinessTags(
+        businessTagList.filter((item) => item.is_active && (item.qa_count ?? 0) > 0)
+      );
       setDrafts(
         Object.fromEntries(
           expertList.map((expert) => [
@@ -182,8 +184,8 @@ export default function AdminExpertsPage() {
                   </div>
                 </div>
 
-                <div className="grid gap-4 xl:grid-cols-[1fr_220px_120px] xl:items-start">
-                  <div className="rounded-2xl border border-border bg-white/80 p-4">
+                <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_260px_180px] xl:items-stretch">
+                  <div className="flex h-full flex-col rounded-2xl border border-border bg-white/80 p-4">
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <p className="text-sm font-medium">领域场景配置</p>
                       <p className="text-xs text-muted-foreground">
@@ -218,13 +220,13 @@ export default function AdminExpertsPage() {
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-border bg-white/80 p-4">
+                  <div className="flex h-full flex-col rounded-2xl border border-border bg-white/80 p-4">
                     <p className="text-sm font-medium">可见范围</p>
                     <p className="mt-2 text-xs leading-6 text-muted-foreground">
-                      关闭后，只能看到自己领域场景内的 QA；没有领域场景标签的通用 QA 仍可分发。
+                      关闭后，仅可查看本领域 QA；无标签的通用 QA 仍可分发。
                     </p>
                     <Button
-                      className="mt-4 w-full"
+                      className="mt-auto w-full"
                       variant={draft.allowCrossBusinessReview ? "default" : "secondary"}
                       disabled={submittingId === expert.id}
                       onClick={() =>
@@ -241,12 +243,19 @@ export default function AdminExpertsPage() {
                     </Button>
                   </div>
 
-                  <Button
-                    disabled={submittingId === expert.id}
-                    onClick={() => void handleSaveSettings(expert.id)}
-                  >
-                    保存配置
-                  </Button>
+                  <div className="flex h-full flex-col rounded-2xl border border-border bg-white/80 p-4">
+                    <p className="text-sm font-medium">保存配置</p>
+                    <p className="mt-2 text-xs leading-6 text-muted-foreground">
+                      保存当前领域场景和可见范围设置。
+                    </p>
+                    <Button
+                      className="mt-auto w-full"
+                      disabled={submittingId === expert.id}
+                      onClick={() => void handleSaveSettings(expert.id)}
+                    >
+                      保存配置
+                    </Button>
+                  </div>
                 </div>
               </div>
             );

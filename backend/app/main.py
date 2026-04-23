@@ -9,6 +9,7 @@ from .routes.auth import router as auth_router
 from .routes.expert import router as expert_router
 from .routes.llm import router as llm_router
 from .routes.me import router as me_router
+from .routes.model_trial import router as model_trial_router
 
 app = FastAPI(title="QA Evaluate API", version="0.1.0")
 
@@ -46,4 +47,5 @@ app.include_router(applications_router)
 app.include_router(me_router)
 app.include_router(expert_router)
 app.include_router(llm_router)
+app.include_router(model_trial_router)
 app.include_router(admin_router)
