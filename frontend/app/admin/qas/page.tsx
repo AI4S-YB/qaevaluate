@@ -4,7 +4,12 @@ import type { Route } from "next";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
-import { apiFetch, type QaListItem, type TaxonomyItem } from "@/lib/api";
+import {
+  apiFetch,
+  type AdminQaListPage,
+  type QaListItem,
+  type TaxonomyItem
+} from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -89,7 +94,7 @@ function resolveOperationalState(item: QaListItem) {
 }
 
 export default function AdminQasPage() {
-  const [qas, setQas] = useState<QaListItem[]>([]);
+  const [qaPage, setQaPage] = useState<AdminQaListPage | null>(null);
   const [technicalTypes, setTechnicalTypes] = useState<TaxonomyItem[]>([]);
   const [businessTags, setBusinessTags] = useState<TaxonomyItem[]>([]);
   const [filter, setFilter] = useState("");
@@ -98,15 +103,29 @@ export default function AdminQasPage() {
   const [businessTagFilter, setBusinessTagFilter] = useState("all");
   const [moduleFilter, setModuleFilter] = useState("all");
   const [actionFilter, setActionFilter] = useState("all");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  async function loadQas() {
+  async function loadQas(nextPage: number, nextPageSize: number) {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiFetch<QaListItem[]>("/api/admin/qas");
-      setQas(data);
+      const params = new URLSearchParams();
+      params.set("page", String(nextPage));
+      params.set("page_size", String(nextPageSize));
+      if (filter.trim()) params.set("keyword", filter.trim());
+      if (stateFilter !== "all") params.set("operational_state", stateFilter);
+      if (technicalTypeFilter !== "all") params.set("technical_type_code", technicalTypeFilter);
+      if (businessTagFilter !== "all") params.set("business_tag_code", businessTagFilter);
+      if (moduleFilter !== "all") params.set("module_key", moduleFilter);
+      if (actionFilter !== "all") params.set("action_key", actionFilter);
+      const data = await apiFetch<AdminQaListPage>(`/api/admin/qas?${params.toString()}`);
+      setQaPage(data);
+      if (data.page !== nextPage) {
+        setPage(data.page);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载 QA 失败");
     } finally {
@@ -128,9 +147,27 @@ export default function AdminQasPage() {
   }
 
   useEffect(() => {
-    void loadQas();
     void loadTaxonomy();
   }, []);
+
+  useEffect(() => {
+    void loadQas(page, pageSize);
+  }, [
+    actionFilter,
+    businessTagFilter,
+    filter,
+    moduleFilter,
+    page,
+    pageSize,
+    stateFilter,
+    technicalTypeFilter
+  ]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [actionFilter, businessTagFilter, filter, moduleFilter, stateFilter, technicalTypeFilter]);
+
+  const qas = qaPage?.items ?? [];
 
   const moduleOptions = useMemo(() => {
     const map = new Map<string, string>();
@@ -154,67 +191,20 @@ export default function AdminQasPage() {
     return Array.from(map.entries()).map(([key, label]) => ({ key, label }));
   }, [qas]);
 
-  const filtered = useMemo(() => {
-    const keyword = filter.trim().toLowerCase();
-    return qas.filter((item) => {
-      const operational = resolveOperationalState(item);
-      const metadata = parseQaMetadata(item.metadata_json);
-      const matchedKeyword =
-        !keyword ||
-        item.application_name.toLowerCase().includes(keyword) ||
-        (item.technical_type_name ?? "").toLowerCase().includes(keyword) ||
-        (item.technical_type_code ?? "").toLowerCase().includes(keyword) ||
-        item.question_summary.toLowerCase().includes(keyword) ||
-        item.status.toLowerCase().includes(keyword) ||
-        (item.final_decision ?? "").toLowerCase().includes(keyword) ||
-        parseBusinessTags(item.business_tags_json).some((tag) =>
-          tag.toLowerCase().includes(keyword)
-        ) ||
-        (metadata.scene_name ?? "").toLowerCase().includes(keyword) ||
-        (metadata.module_name ?? "").toLowerCase().includes(keyword) ||
-        (metadata.action_name ?? "").toLowerCase().includes(keyword) ||
-        operational.label.toLowerCase().includes(keyword);
-      if (!matchedKeyword) return false;
-      if (stateFilter !== "all" && operational.label !== stateFilter) return false;
-      if (technicalTypeFilter !== "all" && item.technical_type_code !== technicalTypeFilter) {
-        return false;
-      }
-      if (
-        businessTagFilter !== "all" &&
-        !parseBusinessTags(item.business_tags_json).includes(businessTagFilter)
-      ) {
-        return false;
-      }
-      if (moduleFilter !== "all" && metadata.module_key !== moduleFilter) {
-        return false;
-      }
-      if (actionFilter !== "all" && metadata.action_key !== actionFilter) {
-        return false;
-      }
-      return true;
-    });
-  }, [actionFilter, businessTagFilter, filter, moduleFilter, qas, stateFilter, technicalTypeFilter]);
-
-  const summary = useMemo(() => {
-    return qas.reduce(
-      (acc, item) => {
-        const state = resolveOperationalState(item).label;
-        if (state === "待聚合") acc.pendingAggregate += 1;
-        if (state === "待最终确认") acc.pendingFinal += 1;
-        if (state === "聚合与最终不一致") acc.mismatch += 1;
-        if (state === "已闭环") acc.closed += 1;
-        return acc;
-      },
-      { pendingAggregate: 0, pendingFinal: 0, mismatch: 0, closed: 0 }
-    );
-  }, [qas]);
+  const filtered = qas;
+  const summary = qaPage?.summary ?? {
+    pending_aggregate: 0,
+    pending_final: 0,
+    mismatch: 0,
+    closed: 0
+  };
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p className="text-sm text-muted-foreground">QA 数据</p>
-          <h2 className="mt-2 font-serif text-4xl">按聚合阶段分流查看问题、答案和最终确认状态</h2>
+          <h2 className="mt-2 font-serif text-4xl">按评审/确认阶段分流查看问题、答案和最终确认状态</h2>
         </div>
         <div className="grid gap-3 xl:grid-cols-[280px_180px_180px_220px_180px_120px]">
           <input
@@ -271,7 +261,7 @@ export default function AdminQasPage() {
               </option>
             ))}
           </select>
-          <Button variant="secondary" onClick={() => void loadQas()}>
+          <Button variant="secondary" onClick={() => void loadQas(page, pageSize)}>
             刷新列表
           </Button>
         </div>
@@ -279,8 +269,8 @@ export default function AdminQasPage() {
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {[
-          ["待聚合", summary.pendingAggregate],
-          ["待最终确认", summary.pendingFinal],
+          ["待聚合", summary.pending_aggregate],
+          ["待最终确认", summary.pending_final],
           ["聚合与最终不一致", summary.mismatch],
           ["已闭环", summary.closed]
         ].map(([label, value]) => (
@@ -298,7 +288,7 @@ export default function AdminQasPage() {
           <div>
             <CardTitle>QA 列表</CardTitle>
             <p className="text-sm text-muted-foreground">
-              当前 {filtered.length} 条 / 全部 {qas.length} 条
+              当前页 {filtered.length} 条 / 筛选后共 {qaPage?.total ?? 0} 条
             </p>
           </div>
           <div className="flex gap-3">
@@ -397,6 +387,60 @@ export default function AdminQasPage() {
               </div>
             );
           })}
+
+          <div className="flex flex-col gap-3 border-t border-border pt-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+              <span>
+                第 {qaPage?.page ?? page} / {qaPage?.total_pages ?? 1} 页
+              </span>
+              <span>
+                当前显示{" "}
+                {qaPage && qaPage.total > 0
+                  ? `${(qaPage.page - 1) * qaPage.page_size + 1}-${(qaPage.page - 1) * qaPage.page_size + qas.length}`
+                  : "0"}{" "}
+                条
+              </span>
+              <label className="flex items-center gap-2">
+                <span>每页</span>
+                <select
+                  className="field min-w-[100px]"
+                  value={pageSize}
+                  onChange={(event) => {
+                    const nextPageSize = Number(event.target.value);
+                    setPageSize(nextPageSize);
+                    setPage(1);
+                  }}
+                >
+                  {[20, 50, 100, 200].map((size) => (
+                    <option key={size} value={size}>
+                      {size} 条
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="flex gap-3">
+              <Button
+                variant="secondary"
+                disabled={loading || (qaPage?.page ?? page) <= 1}
+                onClick={() => setPage((current) => Math.max(current - 1, 1))}
+              >
+                上一页
+              </Button>
+              <Button
+                variant="secondary"
+                disabled={loading || (qaPage?.page ?? page) >= (qaPage?.total_pages ?? 1)}
+                onClick={() =>
+                  setPage((current) => {
+                    const totalPages = qaPage?.total_pages ?? current;
+                    return Math.min(current + 1, totalPages);
+                  })
+                }
+              >
+                下一页
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
     </div>

@@ -77,6 +77,9 @@ if __name__ == "__main__":
             cursor, "direct_qa", "普通问答", "直接回答型 QA", 10
         )
         ensure_technical_type(
+            cursor, "short_reasoning_qa", "短推理问答", "带简短推理解释的 QA", 15
+        )
+        ensure_technical_type(
             cursor, "cot_qa", "长思维链问答", "带推理过程的 QA", 20
         )
 

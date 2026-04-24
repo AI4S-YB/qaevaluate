@@ -16,6 +16,7 @@ node_modules/
 dist/
 coverage/
 backend/.venv/
+backend/local_scripts/
 backend/data/*.db
 backend/data/**/*.db
 backend/data/llm_config_secrets.json

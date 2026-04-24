@@ -7,7 +7,7 @@ import time
 from typing import Optional, Tuple
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -1302,7 +1302,7 @@ def create_export(
     payload: ExportCreatePayload,
     current_user: CurrentUser = Depends(require_admin),
 ):
-    allowed_types = {"final_dataset", "review_records", "disputed_cases"}
+    allowed_types = {"final_dataset", "review_records", "disputed_cases", "sft_dataset"}
     allowed_formats = {"json", "jsonl"}
     if payload.export_type not in allowed_types:
         raise HTTPException(status_code=400, detail="unsupported export type")
@@ -1969,10 +1969,155 @@ def list_import_failures(batch_id: int, current_user: CurrentUser = Depends(requ
 
 
 @router.get("/qas")
-def list_qas(current_user: CurrentUser = Depends(require_admin)):
+def list_qas(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    keyword: Optional[str] = Query(default=None),
+    operational_state: Optional[str] = Query(default=None),
+    technical_type_code: Optional[str] = Query(default=None),
+    business_tag_code: Optional[str] = Query(default=None),
+    module_key: Optional[str] = Query(default=None),
+    action_key: Optional[str] = Query(default=None),
+    current_user: CurrentUser = Depends(require_admin),
+):
+    normalized_keyword = keyword.strip().lower() if keyword else ""
+    state_map = {
+        "待聚合": "(agg.final_decision IS NULL OR agg.final_decision = 'pending')",
+        "待最终确认": "(agg.final_decision IS NOT NULL AND agg.final_decision != 'pending' AND agg.final_standard_answer_id IS NULL)",
+        "聚合与最终不一致": "(agg.current_answer_id IS NOT NULL AND agg.final_standard_answer_id IS NOT NULL AND agg.current_answer_id != agg.final_standard_answer_id)",
+        "已闭环": "(agg.final_decision IS NOT NULL AND agg.final_decision != 'pending' AND agg.final_standard_answer_id IS NOT NULL AND (agg.current_answer_id IS NULL OR agg.current_answer_id = agg.final_standard_answer_id))",
+    }
+
+    def build_filter_parts(
+        *,
+        include_module_filter: bool = True,
+        include_action_filter: bool = True,
+    ) -> tuple[str, list[object]]:
+        conditions: list[str] = []
+        params: list[object] = []
+
+        if normalized_keyword:
+            keyword_like = f"%{normalized_keyword}%"
+            conditions.append(
+                """
+                (
+                  LOWER(a.name) LIKE ?
+                  OR LOWER(COALESCE(tt.name, '')) LIKE ?
+                  OR LOWER(COALESCE(tt.code, '')) LIKE ?
+                  OR LOWER(q.question_text) LIKE ?
+                  OR LOWER(q.status) LIKE ?
+                  OR LOWER(COALESCE(agg.final_decision, '')) LIKE ?
+                  OR LOWER(COALESCE(json_extract(q.metadata_json, '$.scene_name'), '')) LIKE ?
+                  OR LOWER(COALESCE(json_extract(q.metadata_json, '$.module_name'), '')) LIKE ?
+                  OR LOWER(COALESCE(json_extract(q.metadata_json, '$.action_name'), '')) LIKE ?
+                  OR LOWER(COALESCE(q.business_tags_json, '')) LIKE ?
+                )
+                """
+            )
+            params.extend([keyword_like] * 10)
+
+        if technical_type_code and technical_type_code != "all":
+            conditions.append("tt.code = ?")
+            params.append(technical_type_code)
+
+        if business_tag_code and business_tag_code != "all":
+            conditions.append(
+                "EXISTS (SELECT 1 FROM json_each(COALESCE(q.business_tags_json, '[]')) je WHERE je.value = ?)"
+            )
+            params.append(business_tag_code)
+
+        if include_module_filter and module_key and module_key != "all":
+            conditions.append("json_extract(q.metadata_json, '$.module_key') = ?")
+            params.append(module_key)
+
+        if include_action_filter and action_key and action_key != "all":
+            conditions.append("json_extract(q.metadata_json, '$.action_key') = ?")
+            params.append(action_key)
+
+        if operational_state and operational_state != "all":
+            condition = state_map.get(operational_state)
+            if condition:
+                conditions.append(condition)
+
+        where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        base_from_sql = f"""
+            FROM qa_items q
+            JOIN applications a ON a.id = q.application_id
+            LEFT JOIN technical_types tt ON tt.id = q.technical_type_id
+            LEFT JOIN qa_aggregates agg ON agg.qa_item_id = q.id
+            {where_sql}
+        """
+        return base_from_sql, params
+
+    base_from_sql, params = build_filter_parts()
+    module_from_sql, module_params = build_filter_parts(include_module_filter=False)
+    action_from_sql, action_params = build_filter_parts(include_action_filter=False)
+
     with db_cursor() as cursor:
+        total = cursor.execute(
+            f"SELECT COUNT(*) AS count {base_from_sql}",
+            tuple(params),
+        ).fetchone()["count"]
+        summary_row = cursor.execute(
+            f"""
+            SELECT
+              SUM(CASE WHEN agg.final_decision IS NULL OR agg.final_decision = 'pending' THEN 1 ELSE 0 END) AS pending_aggregate,
+              SUM(CASE WHEN agg.final_decision IS NOT NULL AND agg.final_decision != 'pending' AND agg.final_standard_answer_id IS NULL THEN 1 ELSE 0 END) AS pending_final,
+              SUM(CASE WHEN agg.current_answer_id IS NOT NULL AND agg.final_standard_answer_id IS NOT NULL AND agg.current_answer_id != agg.final_standard_answer_id THEN 1 ELSE 0 END) AS mismatch,
+              SUM(CASE WHEN agg.final_decision IS NOT NULL AND agg.final_decision != 'pending' AND agg.final_standard_answer_id IS NOT NULL AND (agg.current_answer_id IS NULL OR agg.current_answer_id = agg.final_standard_answer_id) THEN 1 ELSE 0 END) AS closed
+            {base_from_sql}
+            """,
+            tuple(params),
+        ).fetchone()
+        module_rows = cursor.execute(
+            f"""
+            SELECT
+              option_key,
+              option_label,
+              COUNT(*) AS item_count
+            FROM (
+              SELECT
+                json_extract(q.metadata_json, '$.module_key') AS option_key,
+                COALESCE(
+                  NULLIF(json_extract(q.metadata_json, '$.module_name'), ''),
+                  json_extract(q.metadata_json, '$.module_key')
+                ) AS option_label
+              {module_from_sql}
+            ) module_options
+            WHERE option_key IS NOT NULL
+              AND option_key != ''
+            GROUP BY option_key, option_label
+            ORDER BY item_count DESC, option_label ASC
+            """,
+            tuple(module_params),
+        ).fetchall()
+        action_rows = cursor.execute(
+            f"""
+            SELECT
+              option_key,
+              option_label,
+              COUNT(*) AS item_count
+            FROM (
+              SELECT
+                json_extract(q.metadata_json, '$.action_key') AS option_key,
+                COALESCE(
+                  NULLIF(json_extract(q.metadata_json, '$.action_name'), ''),
+                  json_extract(q.metadata_json, '$.action_key')
+                ) AS option_label
+              {action_from_sql}
+            ) action_options
+            WHERE option_key IS NOT NULL
+              AND option_key != ''
+            GROUP BY option_key, option_label
+            ORDER BY item_count DESC, option_label ASC
+            """,
+            tuple(action_params),
+        ).fetchall()
+        total_pages = max((total + page_size - 1) // page_size, 1)
+        current_page = min(page, total_pages) if total else 1
+        offset = (current_page - 1) * page_size
         rows = cursor.execute(
-            """
+            f"""
             SELECT
               q.id,
               q.external_id,
@@ -1988,12 +2133,11 @@ def list_qas(current_user: CurrentUser = Depends(require_admin)):
               agg.agreement_score,
               agg.current_answer_id,
               agg.final_standard_answer_id
-            FROM qa_items q
-            JOIN applications a ON a.id = q.application_id
-            LEFT JOIN technical_types tt ON tt.id = q.technical_type_id
-            LEFT JOIN qa_aggregates agg ON agg.qa_item_id = q.id
+            {base_from_sql}
             ORDER BY q.id DESC
-            """
+            LIMIT ? OFFSET ?
+            """,
+            (*params, page_size, offset),
         ).fetchall()
     data = []
     for row in rows:
@@ -2001,7 +2145,41 @@ def list_qas(current_user: CurrentUser = Depends(require_admin)):
         item["question_summary"] = item["question_text"][:80]
         item.pop("question_text", None)
         data.append(item)
-    return {"code": 0, "message": "ok", "data": data}
+    return {
+        "code": 0,
+        "message": "ok",
+        "data": {
+            "items": data,
+            "page": current_page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+            "summary": {
+                "pending_aggregate": int(summary_row["pending_aggregate"] or 0),
+                "pending_final": int(summary_row["pending_final"] or 0),
+                "mismatch": int(summary_row["mismatch"] or 0),
+                "closed": int(summary_row["closed"] or 0),
+            },
+            "facets": {
+                "modules": [
+                    {
+                        "key": row["option_key"],
+                        "label": row["option_label"],
+                        "count": int(row["item_count"]),
+                    }
+                    for row in module_rows
+                ],
+                "actions": [
+                    {
+                        "key": row["option_key"],
+                        "label": row["option_label"],
+                        "count": int(row["item_count"]),
+                    }
+                    for row in action_rows
+                ],
+            },
+        },
+    }
 
 
 @router.get("/qas/{qa_id}")

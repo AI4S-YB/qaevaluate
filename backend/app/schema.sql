@@ -328,7 +328,7 @@ CREATE TABLE IF NOT EXISTS qa_aggregates (
 CREATE TABLE IF NOT EXISTS export_jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   job_id TEXT NOT NULL UNIQUE,
-  export_type TEXT NOT NULL CHECK(export_type IN ('final_dataset', 'review_records', 'disputed_cases')),
+  export_type TEXT NOT NULL CHECK(export_type IN ('final_dataset', 'review_records', 'disputed_cases', 'sft_dataset')),
   application_id INTEGER,
   date_from TEXT,
   date_to TEXT,

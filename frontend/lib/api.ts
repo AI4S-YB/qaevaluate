@@ -380,6 +380,21 @@ export type AdminApplicationBusinessTagItem = {
   expert_count: number;
 };
 
+export type PaginatedResult<T> = {
+  items: T[];
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+};
+
+export type QaListSummary = {
+  pending_aggregate: number;
+  pending_final: number;
+  mismatch: number;
+  closed: number;
+};
+
 export type QaListItem = {
   id: number;
   external_id: string | null;
@@ -395,6 +410,10 @@ export type QaListItem = {
   current_answer_id: number | null;
   final_standard_answer_id: number | null;
   question_summary: string;
+};
+
+export type AdminQaListPage = PaginatedResult<QaListItem> & {
+  summary: QaListSummary;
 };
 
 export type QaDetail = {
@@ -564,7 +583,7 @@ export type QueueMonitor = {
 export type ExportJob = {
   id: number;
   job_id: string;
-  export_type: "final_dataset" | "review_records" | "disputed_cases";
+  export_type: "final_dataset" | "review_records" | "disputed_cases" | "sft_dataset";
   application_id: number | null;
   application_name: string | null;
   date_from: string | null;

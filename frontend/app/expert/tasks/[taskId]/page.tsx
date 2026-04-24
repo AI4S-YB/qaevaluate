@@ -15,6 +15,7 @@ import {
   type TaskDetail,
   type TaskDraft
 } from "@/lib/api";
+import { MarkdownContent } from "@/components/markdown-content";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -177,6 +178,23 @@ type QaMetadata = {
   cot_sequence_no?: number;
 };
 
+const structuredAnswerSectionTitles = new Set([
+  "直接结论",
+  "方法主线",
+  "证据与判据",
+  "风险修正",
+  "最终回答",
+  "核心判断",
+  "研究路径",
+  "证据设计",
+  "判定与边界",
+  "结论",
+  "推理主链",
+  "研究与证据设计",
+  "判定规则",
+  "风险与修正"
+]);
+
 function parseQaMetadata(metadataJson: string | null) {
   if (!metadataJson) return {} as QaMetadata;
   try {
@@ -185,6 +203,37 @@ function parseQaMetadata(metadataJson: string | null) {
   } catch {
     return {} as QaMetadata;
   }
+}
+
+function toStructuredAnswerMarkdown(content: string) {
+  const normalized = content.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return "";
+
+  return normalized
+    .split("\n")
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return "";
+      if (structuredAnswerSectionTitles.has(trimmed)) {
+        return `## ${trimmed}`;
+      }
+      return line;
+    })
+    .join("\n");
+}
+
+function StructuredAnswer({
+  content,
+  className = ""
+}: {
+  content: string;
+  className?: string;
+}) {
+  return (
+    <div className={className}>
+      <MarkdownContent content={toStructuredAnswerMarkdown(content)} />
+    </div>
+  );
 }
 
 function formatDate(value: string) {
@@ -1088,9 +1137,10 @@ export default function ExpertTaskDetailPage() {
                   ? ` / ${detail.current_answer.source_model}`
                   : ""}
               </p>
-              <p className="mt-2 leading-8 text-muted-foreground">
-                {detail.current_answer.answer_text}
-              </p>
+              <StructuredAnswer
+                content={detail.current_answer.answer_text}
+                className="mt-3 text-muted-foreground"
+              />
             </div>
             {showingGeneratedAnswer ? (
               <div className="rounded-[28px] border border-emerald-200 bg-emerald-50 p-5">
@@ -1118,9 +1168,10 @@ export default function ExpertTaskDetailPage() {
                     onChange={(event) => setEditableGeneratedAnswerText(event.target.value)}
                   />
                 ) : (
-                  <p className="mt-2 whitespace-pre-wrap leading-8 text-emerald-950">
-                    {displayedGeneratedAnswerText}
-                  </p>
+                  <StructuredAnswer
+                    content={displayedGeneratedAnswerText}
+                    className="mt-3 text-emerald-950"
+                  />
                 )}
               </div>
             ) : null}
@@ -1552,7 +1603,10 @@ export default function ExpertTaskDetailPage() {
                                     {formatDate(message.created_at)}
                                   </span>
                                 </div>
-                                <div className="whitespace-pre-wrap">{message.content}</div>
+                                <StructuredAnswer
+                                  content={message.content}
+                                  className="text-inherit"
+                                />
                                 {messageCandidate ? (
                                   <div className="mt-4 rounded-[20px] border border-border bg-white p-4">
                                     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1572,9 +1626,10 @@ export default function ExpertTaskDetailPage() {
                                         {isMessageCandidateSelected ? "当前已选中" : "选为提交答案"}
                                       </Button>
                                     </div>
-                                    <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-muted-foreground">
-                                      {messageCandidate.answer_text}
-                                    </p>
+                                    <StructuredAnswer
+                                      content={messageCandidate.answer_text}
+                                      className="mt-3 text-muted-foreground"
+                                    />
                                   </div>
                                 ) : null}
                               </div>
@@ -1631,7 +1686,7 @@ export default function ExpertTaskDetailPage() {
                             {formatDate(message.created_at)}
                           </span>
                         </div>
-                        <div className="whitespace-pre-wrap">{message.content}</div>
+                        <StructuredAnswer content={message.content} className="text-inherit" />
                         {messageCandidate ? (
                           <div className="mt-4 rounded-[24px] border border-border bg-stone-50 p-4">
                             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1652,9 +1707,10 @@ export default function ExpertTaskDetailPage() {
                                 {isMessageCandidateSelected ? "当前已选中" : "选为提交答案"}
                               </Button>
                             </div>
-                            <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-muted-foreground">
-                              {messageCandidate.answer_text}
-                            </p>
+                            <StructuredAnswer
+                              content={messageCandidate.answer_text}
+                              className="mt-3 text-muted-foreground"
+                            />
                           </div>
                         ) : null}
                       </div>

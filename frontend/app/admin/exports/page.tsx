@@ -28,6 +28,11 @@ const exportTypes = [
     value: "disputed_cases",
     label: "争议样本",
     description: "导出触发争议复核的 QA，方便抽样复查。"
+  },
+  {
+    value: "sft_dataset",
+    label: "SFT 训练集",
+    description: "导出可直接用于监督微调的 messages 数据，推荐使用 JSONL。"
   }
 ] as const;
 
@@ -105,6 +110,12 @@ export default function AdminExportsPage() {
   useEffect(() => {
     void loadData();
   }, []);
+
+  useEffect(() => {
+    if (exportType === "sft_dataset" && fileFormat !== "jsonl") {
+      setFileFormat("jsonl");
+    }
+  }, [exportType, fileFormat]);
 
   async function handleCreate() {
     setSubmitting(true);
@@ -320,6 +331,9 @@ export default function AdminExportsPage() {
 
             <div className="rounded-[28px] border border-dashed border-stone-300 bg-white/80 p-4 text-sm leading-7 text-muted-foreground">
               当前导出会把 job 写入文件队列，文件产物落在 `data/exports/`。
+              {exportType === "sft_dataset"
+                ? " SFT 训练集会导出为 chat messages 结构，建议选择 JSONL。"
+                : ""}
             </div>
 
             <Button disabled={submitting} onClick={() => void handleCreate()}>

@@ -872,6 +872,147 @@ def build_disputed_case_rows(export_job: dict) -> list[dict]:
     ]
 
 
+def clean_sft_text(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    lines = [line.rstrip() for line in str(value).replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    collapsed: list[str] = []
+    blank_pending = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if collapsed and not blank_pending:
+                collapsed.append("")
+                blank_pending = True
+            continue
+        collapsed.append(stripped if not line.startswith(" ") else line.strip())
+        blank_pending = False
+    return "\n".join(collapsed).strip()
+
+
+def build_sft_user_content(question_text: Optional[str], context_text: Optional[str]) -> str:
+    question = clean_sft_text(question_text)
+    context = clean_sft_text(context_text)
+    if context:
+        return f"{question}\n\n补充背景：\n{context}"
+    return question
+
+
+def build_sft_dataset_rows(export_job: dict) -> list[dict]:
+    query = """
+        SELECT
+          q.id AS qa_item_id,
+          q.external_id,
+          q.question_text,
+          q.context_text,
+          q.difficulty,
+          q.source,
+          q.created_at,
+          q.status,
+          a.id AS application_id,
+          a.name AS application_name,
+          tt.code AS technical_type_code,
+          tt.name AS technical_type_name,
+          agg.final_decision,
+          agg.aggregated_at,
+          final_answer.id AS final_answer_id,
+          final_answer.answer_text AS final_answer_text,
+          final_answer.answer_type AS final_answer_type,
+          final_answer.source_model AS final_answer_source_model,
+          current_answer.id AS current_answer_id,
+          current_answer.answer_text AS current_answer_text,
+          current_answer.answer_type AS current_answer_type,
+          current_answer.source_model AS current_answer_source_model,
+          current_live.id AS current_live_answer_id,
+          current_live.answer_text AS current_live_answer_text,
+          current_live.answer_type AS current_live_answer_type,
+          current_live.source_model AS current_live_answer_source_model
+        FROM qa_items q
+        JOIN applications a ON a.id = q.application_id
+        LEFT JOIN technical_types tt ON tt.id = q.technical_type_id
+        LEFT JOIN qa_aggregates agg ON agg.qa_item_id = q.id
+        LEFT JOIN qa_answers final_answer
+          ON final_answer.id = COALESCE(agg.final_standard_answer_id, agg.current_answer_id)
+        LEFT JOIN qa_answers current_answer
+          ON current_answer.id = agg.current_answer_id
+        LEFT JOIN qa_answers current_live
+          ON current_live.qa_item_id = q.id AND current_live.is_current = 1
+        WHERE (
+          agg.final_decision IN ('pass', 'rewrite')
+          OR q.source IN ('domain-seed', 'demo-seed')
+        )
+    """
+    params: list[object] = []
+    if export_job["application_id"] is not None:
+        query += " AND q.application_id = ?"
+        params.append(export_job["application_id"])
+    if export_job["date_from"]:
+        query += " AND date(COALESCE(agg.aggregated_at, q.created_at)) >= date(?)"
+        params.append(export_job["date_from"])
+    if export_job["date_to"]:
+        query += " AND date(COALESCE(agg.aggregated_at, q.created_at)) <= date(?)"
+        params.append(export_job["date_to"])
+    query += " ORDER BY COALESCE(agg.aggregated_at, q.created_at) DESC, q.id DESC"
+
+    with db_cursor() as cursor:
+        rows = cursor.execute(query, tuple(params)).fetchall()
+
+    exported_rows: list[dict] = []
+    for row in rows:
+        answer_text = clean_sft_text(
+            row["final_answer_text"]
+            or row["current_answer_text"]
+            or row["current_live_answer_text"]
+        )
+        question_text = clean_sft_text(row["question_text"])
+        if not question_text or not answer_text:
+            continue
+        user_content = build_sft_user_content(row["question_text"], row["context_text"])
+        answer_source = (
+            "reviewed_final"
+            if row["final_answer_text"]
+            else ("aggregate_current" if row["current_answer_text"] else "live_current")
+        )
+        exported_rows.append(
+            {
+                "messages": [
+                    {"role": "user", "content": user_content},
+                    {"role": "assistant", "content": answer_text},
+                ],
+                "metadata": {
+                    "qa_item_id": row["qa_item_id"],
+                    "external_id": row["external_id"],
+                    "application": {
+                        "id": row["application_id"],
+                        "name": row["application_name"],
+                    },
+                    "technical_type": {
+                        "code": row["technical_type_code"],
+                        "name": row["technical_type_name"],
+                    },
+                    "difficulty": row["difficulty"],
+                    "source": row["source"],
+                    "status": row["status"],
+                    "answer_source": answer_source,
+                    "final_decision": row["final_decision"],
+                    "answer_type": (
+                        row["final_answer_type"]
+                        or row["current_answer_type"]
+                        or row["current_live_answer_type"]
+                    ),
+                    "source_model": (
+                        row["final_answer_source_model"]
+                        or row["current_answer_source_model"]
+                        or row["current_live_answer_source_model"]
+                    ),
+                    "created_at": row["created_at"],
+                    "aggregated_at": row["aggregated_at"],
+                },
+            }
+        )
+    return exported_rows
+
+
 def write_export_file(path: Path, file_format: str, rows: list[dict]) -> None:
     if file_format == "json":
         path.write_text(
@@ -919,6 +1060,8 @@ def export_dataset(export_job_id: int) -> None:
         rows = build_review_record_rows(export_record)
     elif export_type == "disputed_cases":
         rows = build_disputed_case_rows(export_record)
+    elif export_type == "sft_dataset":
+        rows = build_sft_dataset_rows(export_record)
     else:
         raise ValueError(f"unsupported export type: {export_type}")
 

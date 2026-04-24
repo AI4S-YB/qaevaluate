@@ -38,6 +38,63 @@ def ensure_column(conn: sqlite3.Connection, table_name: str, ddl: str, column_na
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {ddl}")
 
 
+def ensure_export_jobs_support_sft(conn: sqlite3.Connection) -> None:
+    if not table_exists(conn, "export_jobs"):
+        return
+    row = conn.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'export_jobs'
+        """
+    ).fetchone()
+    create_sql = (row["sql"] or "") if row else ""
+    if "sft_dataset" in create_sql:
+        return
+
+    conn.execute("ALTER TABLE export_jobs RENAME TO export_jobs_old")
+    conn.execute(
+        """
+        CREATE TABLE export_jobs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          job_id TEXT NOT NULL UNIQUE,
+          export_type TEXT NOT NULL CHECK(export_type IN ('final_dataset', 'review_records', 'disputed_cases', 'sft_dataset')),
+          application_id INTEGER,
+          date_from TEXT,
+          date_to TEXT,
+          file_format TEXT NOT NULL CHECK(file_format IN ('json', 'jsonl')),
+          status TEXT NOT NULL CHECK(status IN ('pending', 'processing', 'done', 'failed')),
+          file_path TEXT,
+          total_records INTEGER NOT NULL DEFAULT 0,
+          file_size_bytes INTEGER NOT NULL DEFAULT 0,
+          error_message TEXT,
+          created_by INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          started_at TEXT,
+          completed_at TEXT,
+          FOREIGN KEY (application_id) REFERENCES applications(id),
+          FOREIGN KEY (created_by) REFERENCES users(id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO export_jobs (
+          id, job_id, export_type, application_id, date_from, date_to,
+          file_format, status, file_path, total_records, file_size_bytes,
+          error_message, created_by, created_at, started_at, completed_at
+        )
+        SELECT
+          id, job_id, export_type, application_id, date_from, date_to,
+          file_format, status, file_path, total_records, file_size_bytes,
+          error_message, created_by, created_at, started_at, completed_at
+        FROM export_jobs_old
+        """
+    )
+    conn.execute("DROP TABLE export_jobs_old")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_export_jobs_status ON export_jobs(status)")
+
+
 def apply_legacy_migrations(conn: sqlite3.Connection) -> None:
     # Keep startup compatible with older local SQLite files before running schema.sql.
     conn.execute(
@@ -234,6 +291,7 @@ def apply_legacy_migrations(conn: sqlite3.Connection) -> None:
                OR llm_use_case NOT IN ('evaluation', 'trial')
             """
         )
+    ensure_export_jobs_support_sft(conn)
     conn.commit()
 
 
