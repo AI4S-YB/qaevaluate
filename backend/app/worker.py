@@ -475,6 +475,39 @@ def parse_json_text(value: Optional[str], fallback):
         return fallback
 
 
+def apply_export_job_filters(
+    query: str,
+    params: list[object],
+    export_job: dict,
+    *,
+    date_field_sql: str,
+    qa_alias: str = "q",
+    technical_type_field_sql: Optional[str] = None,
+) -> tuple[str, list[object]]:
+    if export_job["application_id"] is not None:
+        query += f" AND {qa_alias}.application_id = ?"
+        params.append(export_job["application_id"])
+
+    technical_type_codes = parse_json_text(export_job.get("technical_type_codes_json"), [])
+    if (
+        technical_type_field_sql
+        and isinstance(technical_type_codes, list)
+        and technical_type_codes
+        and all(isinstance(code, str) and code for code in technical_type_codes)
+    ):
+        query += f" AND {technical_type_field_sql} IN ({','.join('?' for _ in technical_type_codes)})"
+        params.extend(technical_type_codes)
+
+    if export_job["date_from"]:
+        query += f" AND date({date_field_sql}) >= date(?)"
+        params.append(export_job["date_from"])
+    if export_job["date_to"]:
+        query += f" AND date({date_field_sql}) <= date(?)"
+        params.append(export_job["date_to"])
+
+    return query, params
+
+
 def score_to_value(score: str, mapping: Dict[str, float]) -> Optional[float]:
     return mapping.get(score)
 
@@ -661,6 +694,8 @@ def build_final_dataset_rows(export_job: dict) -> list[dict]:
           q.created_at,
           a.id AS application_id,
           a.name AS application_name,
+          tt.code AS technical_type_code,
+          tt.name AS technical_type_name,
           agg.review_count,
           agg.agreement_score,
           agg.final_decision,
@@ -671,21 +706,20 @@ def build_final_dataset_rows(export_job: dict) -> list[dict]:
           final_answer.source_model AS final_answer_source_model
         FROM qa_items q
         JOIN applications a ON a.id = q.application_id
+        LEFT JOIN technical_types tt ON tt.id = q.technical_type_id
         JOIN qa_aggregates agg ON agg.qa_item_id = q.id
         LEFT JOIN qa_answers final_answer
           ON final_answer.id = COALESCE(agg.final_standard_answer_id, agg.current_answer_id)
         WHERE agg.final_decision IN ('pass', 'rewrite', 'fail')
     """
     params: list[object] = []
-    if export_job["application_id"] is not None:
-        query += " AND q.application_id = ?"
-        params.append(export_job["application_id"])
-    if export_job["date_from"]:
-        query += " AND date(agg.aggregated_at) >= date(?)"
-        params.append(export_job["date_from"])
-    if export_job["date_to"]:
-        query += " AND date(agg.aggregated_at) <= date(?)"
-        params.append(export_job["date_to"])
+    query, params = apply_export_job_filters(
+        query,
+        params,
+        export_job,
+        date_field_sql="agg.aggregated_at",
+        technical_type_field_sql="tt.code",
+    )
     query += " ORDER BY agg.aggregated_at DESC, q.id DESC"
 
     with db_cursor() as cursor:
@@ -698,6 +732,10 @@ def build_final_dataset_rows(export_job: dict) -> list[dict]:
             "application": {
                 "id": row["application_id"],
                 "name": row["application_name"],
+            },
+            "technical_type": {
+                "code": row["technical_type_code"],
+                "name": row["technical_type_name"],
             },
             "question": row["question_text"],
             "context": row["context_text"],
@@ -732,6 +770,8 @@ def build_review_record_rows(export_job: dict) -> list[dict]:
           q.question_text,
           a.id AS application_id,
           a.name AS application_name,
+          tt.code AS technical_type_code,
+          tt.name AS technical_type_name,
           ans.id AS answer_id,
           ans.answer_text,
           u.id AS expert_user_id,
@@ -749,21 +789,20 @@ def build_review_record_rows(export_job: dict) -> list[dict]:
         FROM evaluation_records r
         JOIN qa_items q ON q.id = r.qa_item_id
         JOIN applications a ON a.id = q.application_id
+        LEFT JOIN technical_types tt ON tt.id = q.technical_type_id
         JOIN qa_answers ans ON ans.id = r.answer_id
         JOIN users u ON u.id = r.expert_user_id
         LEFT JOIN qa_answers adopted ON adopted.id = r.adopted_rewrite_answer_id
         WHERE 1 = 1
     """
     params: list[object] = []
-    if export_job["application_id"] is not None:
-        query += " AND q.application_id = ?"
-        params.append(export_job["application_id"])
-    if export_job["date_from"]:
-        query += " AND date(r.created_at) >= date(?)"
-        params.append(export_job["date_from"])
-    if export_job["date_to"]:
-        query += " AND date(r.created_at) <= date(?)"
-        params.append(export_job["date_to"])
+    query, params = apply_export_job_filters(
+        query,
+        params,
+        export_job,
+        date_field_sql="r.created_at",
+        technical_type_field_sql="tt.code",
+    )
     query += " ORDER BY r.created_at DESC, r.id DESC"
 
     with db_cursor() as cursor:
@@ -778,6 +817,10 @@ def build_review_record_rows(export_job: dict) -> list[dict]:
             "application": {
                 "id": row["application_id"],
                 "name": row["application_name"],
+            },
+            "technical_type": {
+                "code": row["technical_type_code"],
+                "name": row["technical_type_name"],
             },
             "question": row["question_text"],
             "answer": {
@@ -819,6 +862,8 @@ def build_disputed_case_rows(export_job: dict) -> list[dict]:
           q.question_text,
           a.id AS application_id,
           a.name AS application_name,
+          tt.code AS technical_type_code,
+          tt.name AS technical_type_name,
           agg.review_count,
           agg.agreement_score,
           agg.final_decision,
@@ -827,6 +872,7 @@ def build_disputed_case_rows(export_job: dict) -> list[dict]:
           answer.answer_text
         FROM qa_items q
         JOIN applications a ON a.id = q.application_id
+        LEFT JOIN technical_types tt ON tt.id = q.technical_type_id
         JOIN evaluation_tasks t ON t.qa_item_id = q.id AND t.task_type = 'dispute_review'
         LEFT JOIN qa_aggregates agg ON agg.qa_item_id = q.id
         LEFT JOIN qa_answers answer
@@ -834,15 +880,13 @@ def build_disputed_case_rows(export_job: dict) -> list[dict]:
         WHERE 1 = 1
     """
     params: list[object] = []
-    if export_job["application_id"] is not None:
-        query += " AND q.application_id = ?"
-        params.append(export_job["application_id"])
-    if export_job["date_from"]:
-        query += " AND date(COALESCE(agg.aggregated_at, t.assigned_at)) >= date(?)"
-        params.append(export_job["date_from"])
-    if export_job["date_to"]:
-        query += " AND date(COALESCE(agg.aggregated_at, t.assigned_at)) <= date(?)"
-        params.append(export_job["date_to"])
+    query, params = apply_export_job_filters(
+        query,
+        params,
+        export_job,
+        date_field_sql="COALESCE(agg.aggregated_at, t.assigned_at)",
+        technical_type_field_sql="tt.code",
+    )
     query += " ORDER BY COALESCE(agg.aggregated_at, t.assigned_at) DESC, q.id DESC"
 
     with db_cursor() as cursor:
@@ -855,6 +899,10 @@ def build_disputed_case_rows(export_job: dict) -> list[dict]:
             "application": {
                 "id": row["application_id"],
                 "name": row["application_name"],
+            },
+            "technical_type": {
+                "code": row["technical_type_code"],
+                "name": row["technical_type_name"],
             },
             "question": row["question_text"],
             "current_answer": {
@@ -937,21 +985,16 @@ def build_sft_dataset_rows(export_job: dict) -> list[dict]:
           ON current_answer.id = agg.current_answer_id
         LEFT JOIN qa_answers current_live
           ON current_live.qa_item_id = q.id AND current_live.is_current = 1
-        WHERE (
-          agg.final_decision IN ('pass', 'rewrite')
-          OR q.source IN ('domain-seed', 'demo-seed')
-        )
+        WHERE 1 = 1
     """
     params: list[object] = []
-    if export_job["application_id"] is not None:
-        query += " AND q.application_id = ?"
-        params.append(export_job["application_id"])
-    if export_job["date_from"]:
-        query += " AND date(COALESCE(agg.aggregated_at, q.created_at)) >= date(?)"
-        params.append(export_job["date_from"])
-    if export_job["date_to"]:
-        query += " AND date(COALESCE(agg.aggregated_at, q.created_at)) <= date(?)"
-        params.append(export_job["date_to"])
+    query, params = apply_export_job_filters(
+        query,
+        params,
+        export_job,
+        date_field_sql="COALESCE(agg.aggregated_at, q.created_at)",
+        technical_type_field_sql="tt.code",
+    )
     query += " ORDER BY COALESCE(agg.aggregated_at, q.created_at) DESC, q.id DESC"
 
     with db_cursor() as cursor:
@@ -1069,6 +1112,9 @@ def export_dataset(export_job_id: int) -> None:
     timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     filename = f"export_{export_job_id}_{export_type}_{timestamp}.{export_record['file_format']}"
     file_path = EXPORT_DIR / filename
+    previous_file_path = Path(export_record["file_path"]) if export_record.get("file_path") else None
+    if previous_file_path and previous_file_path.exists():
+        previous_file_path.unlink()
     write_export_file(file_path, export_record["file_format"], rows)
 
     with db_cursor() as cursor:

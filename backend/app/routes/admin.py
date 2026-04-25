@@ -59,6 +59,7 @@ class FinalAnswerPayload(BaseModel):
 class ExportCreatePayload(BaseModel):
     export_type: str = Field(alias="type")
     application_id: Optional[int] = None
+    technical_type_codes: list[str] = Field(default_factory=list)
     date_from: Optional[str] = Field(default=None, alias="from")
     date_to: Optional[str] = Field(default=None, alias="to")
     file_format: str = Field(default="json", alias="format")
@@ -179,6 +180,16 @@ def serialize_export_job(row) -> dict:
     item = dict(row)
     file_path = item.get("file_path")
     item["file_name"] = Path(file_path).name if file_path else None
+    try:
+        technical_type_codes = json.loads(item.get("technical_type_codes_json") or "[]")
+    except json.JSONDecodeError:
+        technical_type_codes = []
+    item["technical_type_codes"] = (
+        technical_type_codes
+        if isinstance(technical_type_codes, list)
+        and all(isinstance(code, str) for code in technical_type_codes)
+        else []
+    )
     return item
 
 
@@ -1318,18 +1329,37 @@ def create_export(
             if not application:
                 raise HTTPException(status_code=404, detail="application not found")
 
+        technical_type_codes = [code.strip() for code in payload.technical_type_codes if code.strip()]
+        if technical_type_codes:
+            rows = cursor.execute(
+                f"""
+                SELECT code
+                FROM technical_types
+                WHERE code IN ({",".join("?" for _ in technical_type_codes)})
+                """,
+                tuple(technical_type_codes),
+            ).fetchall()
+            found_codes = {row["code"] for row in rows}
+            missing_codes = [code for code in technical_type_codes if code not in found_codes]
+            if missing_codes:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"technical types not found: {', '.join(missing_codes)}",
+                )
+
         job_id = f"export_{uuid4().hex}"
         cursor.execute(
             """
             INSERT INTO export_jobs (
-              job_id, export_type, application_id, date_from, date_to,
+              job_id, export_type, application_id, technical_type_codes_json, date_from, date_to,
               file_format, status, created_by, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
             """,
             (
                 job_id,
                 payload.export_type,
                 payload.application_id,
+                json.dumps(technical_type_codes, ensure_ascii=False),
                 payload.date_from,
                 payload.date_to,
                 payload.file_format,
@@ -1389,6 +1419,135 @@ def list_exports(current_user: CurrentUser = Depends(require_admin)):
         "code": 0,
         "message": "ok",
         "data": [serialize_export_job(row) for row in rows],
+    }
+
+
+@router.delete("/exports/{export_id}")
+def delete_export(export_id: int, current_user: CurrentUser = Depends(require_admin)):
+    with db_cursor() as cursor:
+        row = cursor.execute(
+            """
+            SELECT *
+            FROM export_jobs
+            WHERE id = ?
+            """,
+            (export_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="export job not found")
+        if row["status"] == "processing":
+            raise HTTPException(status_code=409, detail="processing export job cannot be deleted")
+
+        file_path = Path(row["file_path"]) if row["file_path"] else None
+        job_id = row["job_id"]
+        export_file_glob = f"export_{export_id}_*"
+        cursor.execute("DELETE FROM export_jobs WHERE id = ?", (export_id,))
+
+    if file_path and file_path.exists():
+        file_path.unlink()
+    for orphaned_file in EXPORT_DIR.glob(export_file_glob):
+        if orphaned_file.is_file():
+            orphaned_file.unlink()
+
+    for status in ("pending", "processing", "done", "failed"):
+        queue_path = QUEUE_DIR / status / f"{job_id}.json"
+        if queue_path.exists():
+            queue_path.unlink()
+        error_path = QUEUE_DIR / status / f"{job_id}.error.txt"
+        if error_path.exists():
+            error_path.unlink()
+
+    return {"code": 0, "message": "ok", "data": {"id": export_id}}
+
+
+@router.get("/exports/stats")
+def export_stats(current_user: CurrentUser = Depends(require_admin)):
+    with db_cursor() as cursor:
+        daily_import_rows = cursor.execute(
+            """
+            WITH RECURSIVE days(day) AS (
+              SELECT date('now', '-55 day')
+              UNION ALL
+              SELECT date(day, '+1 day') FROM days WHERE day < date('now')
+            )
+            SELECT
+              days.day AS period,
+              COALESCE(imports.import_count, 0) AS import_count,
+              COALESCE(reviews.review_count, 0) AS review_count
+            FROM days
+            LEFT JOIN (
+              SELECT date(created_at) AS day, COUNT(*) AS import_count
+              FROM qa_items
+              GROUP BY date(created_at)
+            ) imports ON imports.day = days.day
+            LEFT JOIN (
+              SELECT date(submitted_at) AS day, COUNT(*) AS review_count
+              FROM evaluation_tasks
+              WHERE status = 'submitted' AND submitted_at IS NOT NULL
+              GROUP BY date(submitted_at)
+            ) reviews ON reviews.day = days.day
+            ORDER BY days.day DESC
+            """
+        ).fetchall()
+        weekly_import_rows = cursor.execute(
+            """
+            SELECT
+              strftime('%Y-W%W', periods.week_start) AS period,
+              periods.week_start AS period_start,
+              date(periods.week_start, '+6 day') AS period_end,
+              COALESCE(imports.import_count, 0) AS import_count,
+              COALESCE(reviews.review_count, 0) AS review_count
+            FROM (
+              SELECT week_start FROM (
+                SELECT date(
+                  created_at,
+                  printf('-%d day', (CAST(strftime('%w', created_at) AS integer) + 6) % 7)
+                ) AS week_start
+                FROM qa_items
+                UNION
+                SELECT date(
+                  submitted_at,
+                  printf('-%d day', (CAST(strftime('%w', submitted_at) AS integer) + 6) % 7)
+                ) AS week_start
+                FROM evaluation_tasks
+                WHERE status = 'submitted' AND submitted_at IS NOT NULL
+              )
+              WHERE week_start IS NOT NULL
+              ORDER BY week_start DESC
+              LIMIT 8
+            ) periods
+            LEFT JOIN (
+              SELECT
+                date(
+                  created_at,
+                  printf('-%d day', (CAST(strftime('%w', created_at) AS integer) + 6) % 7)
+                ) AS week_start,
+                COUNT(*) AS import_count
+              FROM qa_items
+              GROUP BY week_start
+            ) imports ON imports.week_start = periods.week_start
+            LEFT JOIN (
+              SELECT
+                date(
+                  submitted_at,
+                  printf('-%d day', (CAST(strftime('%w', submitted_at) AS integer) + 6) % 7)
+                ) AS week_start,
+                COUNT(*) AS review_count
+              FROM evaluation_tasks
+              WHERE status = 'submitted' AND submitted_at IS NOT NULL
+              GROUP BY week_start
+            ) reviews ON reviews.week_start = periods.week_start
+            ORDER BY periods.week_start DESC
+            """
+        ).fetchall()
+
+    return {
+        "code": 0,
+        "message": "ok",
+        "data": {
+            "daily": [dict(row) for row in daily_import_rows],
+            "weekly": [dict(row) for row in weekly_import_rows],
+        },
     }
 
 

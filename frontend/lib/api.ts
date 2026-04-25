@@ -586,6 +586,8 @@ export type ExportJob = {
   export_type: "final_dataset" | "review_records" | "disputed_cases" | "sft_dataset";
   application_id: number | null;
   application_name: string | null;
+  technical_type_codes_json?: string | null;
+  technical_type_codes: string[];
   date_from: string | null;
   date_to: string | null;
   file_format: "json" | "jsonl";
@@ -600,6 +602,19 @@ export type ExportJob = {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+};
+
+export type ExportStatsPoint = {
+  period?: string;
+  period_start?: string;
+  period_end?: string;
+  import_count: number;
+  review_count: number;
+};
+
+export type ExportStats = {
+  daily: ExportStatsPoint[];
+  weekly: ExportStatsPoint[];
 };
 
 export type TaxonomyItem = {

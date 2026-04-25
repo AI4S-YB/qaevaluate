@@ -330,6 +330,7 @@ CREATE TABLE IF NOT EXISTS export_jobs (
   job_id TEXT NOT NULL UNIQUE,
   export_type TEXT NOT NULL CHECK(export_type IN ('final_dataset', 'review_records', 'disputed_cases', 'sft_dataset')),
   application_id INTEGER,
+  technical_type_codes_json TEXT,
   date_from TEXT,
   date_to TEXT,
   file_format TEXT NOT NULL CHECK(file_format IN ('json', 'jsonl')),

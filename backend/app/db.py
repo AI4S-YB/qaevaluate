@@ -60,6 +60,7 @@ def ensure_export_jobs_support_sft(conn: sqlite3.Connection) -> None:
           job_id TEXT NOT NULL UNIQUE,
           export_type TEXT NOT NULL CHECK(export_type IN ('final_dataset', 'review_records', 'disputed_cases', 'sft_dataset')),
           application_id INTEGER,
+          technical_type_codes_json TEXT,
           date_from TEXT,
           date_to TEXT,
           file_format TEXT NOT NULL CHECK(file_format IN ('json', 'jsonl')),
@@ -80,12 +81,12 @@ def ensure_export_jobs_support_sft(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         INSERT INTO export_jobs (
-          id, job_id, export_type, application_id, date_from, date_to,
+          id, job_id, export_type, application_id, technical_type_codes_json, date_from, date_to,
           file_format, status, file_path, total_records, file_size_bytes,
           error_message, created_by, created_at, started_at, completed_at
         )
         SELECT
-          id, job_id, export_type, application_id, date_from, date_to,
+          id, job_id, export_type, application_id, NULL, date_from, date_to,
           file_format, status, file_path, total_records, file_size_bytes,
           error_message, created_by, created_at, started_at, completed_at
         FROM export_jobs_old
@@ -216,6 +217,7 @@ def apply_legacy_migrations(conn: sqlite3.Connection) -> None:
         "peer_review_status TEXT NOT NULL DEFAULT 'none' CHECK(peer_review_status IN ('none', 'queued', 'pending', 'in_progress', 'completed'))",
         "peer_review_status",
     )
+    ensure_column(conn, "export_jobs", "technical_type_codes_json TEXT", "technical_type_codes_json")
     ensure_column(conn, "llm_configs", "last_tested_at TEXT", "last_tested_at")
     ensure_column(
         conn,

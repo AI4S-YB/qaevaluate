@@ -201,12 +201,14 @@ export default function AdminQasPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+      <div className="space-y-4">
         <div>
           <p className="text-sm text-muted-foreground">QA 数据</p>
-          <h2 className="mt-2 font-serif text-4xl">按评审/确认阶段分流查看问题、答案和最终确认状态</h2>
+          <h2 className="mt-2 max-w-4xl font-serif text-4xl leading-tight">
+            按评审/确认阶段分流查看问题、答案和最终确认状态
+          </h2>
         </div>
-        <div className="grid gap-3 xl:grid-cols-[280px_180px_180px_220px_180px_120px]">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[280px_180px_180px_220px_180px_120px]">
           <input
             className="field"
             placeholder="筛选场景、模块、动作或阶段"
