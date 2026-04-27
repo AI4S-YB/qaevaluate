@@ -11,19 +11,32 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from ..auth import CurrentUser, require_admin
+from ..auth import CurrentUser, get_current_user, require_admin
 from ..config import APP_ENV, DB_PATH, EXPORT_DIR, QUEUE_DIR, RUNTIME_DATA_DIR, UPLOAD_DIR
 from ..db import db_cursor
 from ..jobs import queue_job, queue_unique_import_job
 from ..llm_client import LlmClientError, call_openai_compatible_chat
 from ..llm_config_store import get_llm_api_key, mask_api_key, set_llm_api_key
 from ..worker import get_next_job, process_job
+from .auth import hash_password
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+news_router = APIRouter(tags=["news"])
 
 
 def now_iso() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat()
+
+
+def record_changelog(model_name: str, change_type: str, description: str) -> None:
+    with db_cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO model_changelogs (model_name, change_type, description, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (model_name, change_type, description, now_iso()),
+        )
 
 
 def parse_tag_codes(value: Optional[str]) -> set[str]:
@@ -916,6 +929,7 @@ def create_trial_llm_config(
         )
         config_id = int(cursor.lastrowid)
     set_llm_api_key(config_id, api_key)
+    record_changelog(normalized["model_name"], "added", f"新增试用模型: {normalized['name']} ({normalized['model_name']})")
     return {"code": 0, "message": "ok", "data": {"id": config_id}}
 
 
@@ -929,7 +943,7 @@ def update_trial_llm_config(
     updated_at = now_iso()
     with db_cursor() as cursor:
         existing = cursor.execute(
-            "SELECT id, api_key, llm_use_case FROM llm_configs WHERE id = ?",
+            "SELECT id, api_key, model_name, llm_use_case FROM llm_configs WHERE id = ?",
             (config_id,),
         ).fetchone()
         if not existing:
@@ -976,6 +990,11 @@ def update_trial_llm_config(
         )
     if api_key:
         set_llm_api_key(config_id, api_key)
+    if normalized["model_name"] != existing["model_name"]:
+        record_changelog(
+            normalized["model_name"], "updated",
+            f"试用模型更新: {normalized['name']} ({existing['model_name']} → {normalized['model_name']})",
+        )
     return {"code": 0, "message": "ok", "data": {"id": config_id}}
 
 
@@ -1460,8 +1479,8 @@ def delete_export(export_id: int, current_user: CurrentUser = Depends(require_ad
     return {"code": 0, "message": "ok", "data": {"id": export_id}}
 
 
-@router.get("/exports/stats")
-def export_stats(current_user: CurrentUser = Depends(require_admin)):
+@news_router.get("/api/exports/stats")
+def export_stats(current_user: CurrentUser = Depends(get_current_user)):
     with db_cursor() as cursor:
         daily_import_rows = cursor.execute(
             """
@@ -1812,6 +1831,28 @@ def reject_expert(
     return {"code": 0, "message": "ok", "data": {"id": expert_id, "status": "rejected"}}
 
 
+class ResetPasswordPayload(BaseModel):
+    new_password: str = Field(min_length=6)
+
+
+class NewsCreatePayload(BaseModel):
+    title: str
+    content: str
+    is_published: bool = False
+
+
+class NewsUpdatePayload(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    is_published: Optional[bool] = None
+
+
+class FeedbackPayload(BaseModel):
+    title: str
+    content: str
+    category: str = "general"
+
+
 @router.post("/experts/{expert_id}/disable")
 def disable_expert(
     expert_id: int,
@@ -1830,6 +1871,30 @@ def disable_expert(
     if not updated:
         raise HTTPException(status_code=404, detail="expert not found")
     return {"code": 0, "message": "ok", "data": {"id": expert_id, "status": "disabled"}}
+
+
+@router.post("/experts/{expert_id}/reset-password")
+def reset_expert_password(
+    expert_id: int,
+    payload: ResetPasswordPayload,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    with db_cursor() as cursor:
+        expert = cursor.execute(
+            "SELECT id FROM users WHERE id = ? AND role = 'expert'",
+            (expert_id,),
+        ).fetchone()
+        if not expert:
+            raise HTTPException(status_code=404, detail="expert not found")
+        cursor.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (hash_password(payload.new_password), expert_id),
+        )
+        cursor.execute(
+            "DELETE FROM auth_sessions WHERE user_id = ?",
+            (expert_id,),
+        )
+    return {"code": 0, "message": "ok", "data": {"id": expert_id}}
 
 
 @router.post("/imports/upload")
@@ -2514,3 +2579,240 @@ def dispatch_tasks(
         {"application_id": payload.application_id, "limit": payload.limit},
     )
     return {"code": 0, "message": "ok", "data": {"job_id": job_id}}
+
+
+def serialize_news(row, *, with_author: bool = True):
+    item = dict(row)
+    item["is_published"] = bool(item["is_published"])
+    return item
+
+
+@news_router.get("/api/news")
+def list_published_news(current_user: CurrentUser = Depends(get_current_user)):
+    with db_cursor() as cursor:
+        rows = cursor.execute(
+            """
+            SELECT n.id, n.title, n.content, n.is_published, n.created_by,
+                   n.created_at, n.updated_at, u.full_name AS created_by_name
+            FROM news n
+            LEFT JOIN users u ON u.id = n.created_by
+            WHERE n.is_published = 1
+            ORDER BY n.created_at DESC
+            LIMIT 10
+            """
+        ).fetchall()
+    return {
+        "code": 0,
+        "message": "ok",
+        "data": [serialize_news(row) for row in rows],
+    }
+
+
+@router.get("/news")
+def list_all_news(current_user: CurrentUser = Depends(require_admin)):
+    with db_cursor() as cursor:
+        rows = cursor.execute(
+            """
+            SELECT n.id, n.title, n.content, n.is_published, n.created_by,
+                   n.created_at, n.updated_at, u.full_name AS created_by_name
+            FROM news n
+            LEFT JOIN users u ON u.id = n.created_by
+            ORDER BY n.created_at DESC
+            """
+        ).fetchall()
+    return {
+        "code": 0,
+        "message": "ok",
+        "data": [serialize_news(row) for row in rows],
+    }
+
+
+@router.post("/news")
+def create_news(
+    payload: NewsCreatePayload,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    created_at = now_iso()
+    with db_cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO news (title, content, is_published, created_by, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.title.strip(),
+                payload.content.strip(),
+                1 if payload.is_published else 0,
+                current_user["id"],
+                created_at,
+                created_at,
+            ),
+        )
+        news_id = int(cursor.lastrowid)
+    return {"code": 0, "message": "ok", "data": {"id": news_id}}
+
+
+@router.patch("/news/{news_id}")
+def update_news(
+    news_id: int,
+    payload: NewsUpdatePayload,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        return {"code": 0, "message": "ok", "data": {"id": news_id}}
+    with db_cursor() as cursor:
+        existing = cursor.execute(
+            "SELECT id FROM news WHERE id = ?",
+            (news_id,),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="news not found")
+        fields = []
+        values: list[object] = []
+        for key, value in updates.items():
+            if key == "is_published":
+                fields.append("is_published = ?")
+                values.append(1 if value else 0)
+            elif key == "title":
+                fields.append("title = ?")
+                values.append(value.strip())
+            elif key == "content":
+                fields.append("content = ?")
+                values.append(value.strip())
+        if fields:
+            fields.append("updated_at = ?")
+            values.append(now_iso())
+            values.append(news_id)
+            cursor.execute(
+                f"UPDATE news SET {', '.join(fields)} WHERE id = ?",
+                tuple(values),
+            )
+    return {"code": 0, "message": "ok", "data": {"id": news_id}}
+
+
+@router.delete("/news/{news_id}")
+def delete_news(
+    news_id: int,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    with db_cursor() as cursor:
+        existing = cursor.execute(
+            "SELECT id FROM news WHERE id = ?",
+            (news_id,),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="news not found")
+        cursor.execute("DELETE FROM news WHERE id = ?", (news_id,))
+    return {"code": 0, "message": "ok", "data": {"id": news_id}}
+
+
+@news_router.post("/api/feedback")
+def submit_feedback(
+    payload: FeedbackPayload,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    created_at = now_iso()
+    with db_cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO feedbacks (title, content, category, user_id, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (payload.title.strip(), payload.content.strip(), payload.category.strip(), current_user["id"], created_at),
+        )
+        feedback_id = int(cursor.lastrowid)
+    return {"code": 0, "message": "ok", "data": {"id": feedback_id, "created_at": created_at}}
+
+
+@router.get("/feedbacks")
+def list_feedbacks(current_user: CurrentUser = Depends(require_admin)):
+    with db_cursor() as cursor:
+        rows = cursor.execute(
+            """
+            SELECT f.id, f.title, f.content, f.category, f.user_id, f.created_at,
+                   u.full_name AS user_name, u.username
+            FROM feedbacks f
+            LEFT JOIN users u ON u.id = f.user_id
+            ORDER BY f.created_at DESC
+            LIMIT 100
+            """
+        ).fetchall()
+    return {
+        "code": 0,
+        "message": "ok",
+        "data": [dict(row) for row in rows],
+    }
+
+
+@news_router.get("/api/models/changelog")
+def get_model_changelog(
+    days: int = 7,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    with db_cursor() as cursor:
+        rows = cursor.execute(
+            """
+            SELECT id, model_name, change_type, description, created_at
+            FROM model_changelogs
+            WHERE created_at >= date('now', ? || ' days')
+            ORDER BY created_at DESC
+            """,
+            (f"-{days}",),
+        ).fetchall()
+    return {
+        "code": 0,
+        "message": "ok",
+        "data": [dict(row) for row in rows],
+    }
+
+
+@news_router.get("/api/stats")
+def get_public_stats(current_user: CurrentUser = Depends(get_current_user)):
+    with db_cursor() as cursor:
+        today_qa = cursor.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM qa_items
+            WHERE date(created_at) = date('now')
+            """
+        ).fetchone()["count"]
+        week_qa = cursor.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM qa_items
+            WHERE created_at >= date('now', '-6 days')
+            """
+        ).fetchone()["count"]
+        today_reviews = cursor.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM evaluation_records
+            WHERE date(created_at) = date('now')
+            """
+        ).fetchone()["count"]
+        week_reviews = cursor.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM evaluation_records
+            WHERE created_at >= date('now', '-6 days')
+            """
+        ).fetchone()["count"]
+        total_models = cursor.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM llm_configs
+            WHERE is_trial_enabled = 1 AND is_enabled = 1
+            """
+        ).fetchone()["count"]
+    return {
+        "code": 0,
+        "message": "ok",
+        "data": {
+            "today_qa_count": today_qa,
+            "week_qa_count": week_qa,
+            "today_review_count": today_reviews,
+            "week_review_count": week_reviews,
+            "available_model_count": total_models,
+        },
+    }

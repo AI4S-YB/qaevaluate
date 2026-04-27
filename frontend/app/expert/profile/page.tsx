@@ -21,6 +21,15 @@ export default function ExpertProfilePage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const [passwordForm, setPasswordForm] = useState({
+    currentPassword: "",
+    newPassword: "",
+    confirmPassword: ""
+  });
+  const [changingPassword, setChangingPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordNotice, setPasswordNotice] = useState<string | null>(null);
+
   async function loadData() {
     setLoading(true);
     setError(null);
@@ -100,6 +109,35 @@ export default function ExpertProfilePage() {
       setError(err instanceof Error ? err.message : "保存资料失败");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleChangePassword() {
+    setChangingPassword(true);
+    setPasswordError(null);
+    setPasswordNotice(null);
+    try {
+      if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+        setPasswordError("两次输入的新密码不一致");
+        return;
+      }
+      if (passwordForm.newPassword.length < 6) {
+        setPasswordError("新密码长度不能少于 6 位");
+        return;
+      }
+      await apiFetch("/api/me/change-password", {
+        method: "POST",
+        body: JSON.stringify({
+          current_password: passwordForm.currentPassword,
+          new_password: passwordForm.newPassword
+        })
+      });
+      setPasswordNotice("密码已修改成功。");
+      setPasswordForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
+    } catch (err) {
+      setPasswordError(err instanceof Error ? err.message : "修改密码失败");
+    } finally {
+      setChangingPassword(false);
     }
   }
 
@@ -206,6 +244,60 @@ export default function ExpertProfilePage() {
           <div className="md:col-span-2 flex justify-end">
             <Button disabled={loading || saving} onClick={() => void handleSave()}>
               {saving ? "保存中…" : "保存资料"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>修改密码</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-4 md:grid-cols-2">
+          {passwordError ? (
+            <div className="rounded-[24px] border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 md:col-span-2">
+              {passwordError}
+            </div>
+          ) : null}
+          {passwordNotice ? (
+            <div className="rounded-[24px] border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800 md:col-span-2">
+              {passwordNotice}
+            </div>
+          ) : null}
+          <input
+            className="field"
+            type="password"
+            value={passwordForm.currentPassword}
+            onChange={(event) =>
+              setPasswordForm((current) => ({ ...current, currentPassword: event.target.value }))
+            }
+            placeholder="当前密码"
+            disabled={changingPassword}
+          />
+          <div />
+          <input
+            className="field"
+            type="password"
+            value={passwordForm.newPassword}
+            onChange={(event) =>
+              setPasswordForm((current) => ({ ...current, newPassword: event.target.value }))
+            }
+            placeholder="新密码（至少 6 位）"
+            disabled={changingPassword}
+          />
+          <input
+            className="field"
+            type="password"
+            value={passwordForm.confirmPassword}
+            onChange={(event) =>
+              setPasswordForm((current) => ({ ...current, confirmPassword: event.target.value }))
+            }
+            placeholder="确认新密码"
+            disabled={changingPassword}
+          />
+          <div className="md:col-span-2 flex justify-end">
+            <Button disabled={changingPassword} onClick={() => void handleChangePassword()}>
+              {changingPassword ? "修改中…" : "修改密码"}
             </Button>
           </div>
         </CardContent>

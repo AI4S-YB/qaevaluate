@@ -1,3 +1,53 @@
+export type NewsItem = {
+  id: number;
+  title: string;
+  content: string;
+  is_published: boolean;
+  created_by: number;
+  created_by_name: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FeedbackItem = {
+  id: number;
+  title: string;
+  content: string;
+  category: string;
+  user_id: number;
+  user_name: string | null;
+  username: string | null;
+  created_at: string;
+};
+
+export type ModelChangelogItem = {
+  id: number;
+  model_name: string;
+  change_type: "added" | "updated";
+  description: string;
+  created_at: string;
+};
+
+export type PublicStats = {
+  today_qa_count: number;
+  week_qa_count: number;
+  today_review_count: number;
+  week_review_count: number;
+  available_model_count: number;
+};
+
+export type GenerateModelItem = {
+  id: number;
+  name: string;
+  provider: string;
+  baseUrl: string;
+  model: string;
+  temperature: number;
+  maxTokens: number;
+  batchSize: number;
+  maxInFlight: number;
+};
+
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8100";
 

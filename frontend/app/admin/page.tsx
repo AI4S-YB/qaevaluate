@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
-import { apiFetch, type AdminDashboard } from "@/lib/api";
+import { apiFetch, type AdminDashboard, type NewsItem, type PublicStats } from "@/lib/api";
 import { MetricCard } from "@/components/metric-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -13,28 +13,27 @@ function progressPercent(reviewed: number, total: number) {
 
 export default function AdminDashboardPage() {
   const [dashboard, setDashboard] = useState<AdminDashboard | null>(null);
+  const [newsList, setNewsList] = useState<NewsItem[]>([]);
+  const [stats, setStats] = useState<PublicStats | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadDashboard() {
       try {
-        const data = await apiFetch<AdminDashboard>("/api/admin/dashboard");
+        const [data, newsData, statsData] = await Promise.all([
+          apiFetch<AdminDashboard>("/api/admin/dashboard"),
+          apiFetch<NewsItem[]>("/api/news"),
+          apiFetch<PublicStats>("/api/stats")
+        ]);
         setDashboard(data);
+        setNewsList(newsData);
+        setStats(statsData);
       } catch (err) {
         setError(err instanceof Error ? err.message : "加载仪表盘失败");
       }
     }
     void loadDashboard();
   }, []);
-
-  const topApplication = useMemo(() => {
-    if (!dashboard) return null;
-    return [...dashboard.application_progress].sort((left, right) => {
-      const leftRate = progressPercent(left.reviewed_qas, left.total_qas);
-      const rightRate = progressPercent(right.reviewed_qas, right.total_qas);
-      return rightRate - leftRate;
-    })[0];
-  }, [dashboard]);
 
   return (
     <div className="space-y-6">
@@ -71,6 +70,20 @@ export default function AdminDashboardPage() {
           note="已触发 dispute_review 的问题数"
         />
       </section>
+
+      {stats ? (
+        <section className="flex flex-wrap gap-3 rounded-3xl border border-border bg-stone-50 px-5 py-3 text-sm text-muted-foreground">
+          <span>今日新增 QA <strong className="text-foreground">{stats.today_qa_count}</strong> 条</span>
+          <span className="text-stone-300">|</span>
+          <span>本周新增 QA <strong className="text-foreground">{stats.week_qa_count}</strong> 条</span>
+          <span className="text-stone-300">|</span>
+          <span>今日评审 <strong className="text-foreground">{stats.today_review_count}</strong> 条</span>
+          <span className="text-stone-300">|</span>
+          <span>本周评审 <strong className="text-foreground">{stats.week_review_count}</strong> 条</span>
+          <span className="text-stone-300">|</span>
+          <span>可用试用模型 <strong className="text-foreground">{stats.available_model_count}</strong> 个</span>
+        </section>
+      ) : null}
 
       <section className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
         <Card>
@@ -112,22 +125,27 @@ export default function AdminDashboardPage() {
 
         <Card className="bg-stone-50">
           <CardHeader>
-            <CardTitle>当前判断</CardTitle>
+            <CardTitle>最新消息</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3 text-sm leading-7 text-muted-foreground">
-            <p>
-              当前总 QA 数为 {dashboard?.metrics.total_qas ?? 0}，其中已完成评测{" "}
-              {dashboard?.metrics.reviewed_qas ?? 0} 条。
-            </p>
-            <p>
-              已导入批次 {dashboard?.metrics.imported_batches ?? 0} 个，平台仍应优先处理
-              active 状态样本。
-            </p>
-            <p>
-              {topApplication
-                ? `${topApplication.name} 当前完成率最高，可优先沉淀标准答案库。`
-                : "待有更多实际数据后再生成运营建议。"}
-            </p>
+          <CardContent className="space-y-4">
+            {newsList.length ? (
+              newsList.map((item) => (
+                <div
+                  key={item.id}
+                  className="rounded-[24px] border border-border bg-white/80 p-4"
+                >
+                  <p className="font-medium">{item.title}</p>
+                  <p className="mt-2 text-sm leading-7 text-muted-foreground">
+                    {item.content}
+                  </p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {item.created_at.replace("T", " ").slice(0, 16)}
+                  </p>
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-muted-foreground">暂无最新消息。</p>
+            )}
           </CardContent>
         </Card>
       </section>

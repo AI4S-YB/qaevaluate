@@ -8,7 +8,9 @@ import {
   apiFetch,
   type ExpertHistoryItem,
   type ExpertTaskListItem,
-  type MeProfile
+  type MeProfile,
+  type NewsItem,
+  type PublicStats
 } from "@/lib/api";
 import { MetricCard } from "@/components/metric-card";
 import { Badge } from "@/components/ui/badge";
@@ -53,20 +55,26 @@ export default function ExpertDashboardPage() {
   const [profile, setProfile] = useState<MeProfile | null>(null);
   const [tasks, setTasks] = useState<ExpertTaskListItem[]>([]);
   const [history, setHistory] = useState<ExpertHistoryItem[]>([]);
+  const [newsList, setNewsList] = useState<NewsItem[]>([]);
+  const [stats, setStats] = useState<PublicStats | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadData() {
       setError(null);
       try {
-        const [me, taskList, historyList] = await Promise.all([
+        const [me, taskList, historyList, newsData, statsData] = await Promise.all([
           apiFetch<MeProfile>("/api/me"),
           apiFetch<ExpertTaskListItem[]>("/api/expert/tasks"),
-          apiFetch<ExpertHistoryItem[]>("/api/expert/history")
+          apiFetch<ExpertHistoryItem[]>("/api/expert/history"),
+          apiFetch<NewsItem[]>("/api/news"),
+          apiFetch<PublicStats>("/api/stats")
         ]);
         setProfile(me);
         setTasks(taskList);
         setHistory(historyList);
+        setNewsList(newsData);
+        setStats(statsData);
       } catch (err) {
         setError(err instanceof Error ? err.message : "加载工作台失败");
       }
@@ -174,6 +182,20 @@ export default function ExpertDashboardPage() {
         <MetricCard label="被最终采纳" value={String(adoptedFinalHistory.length)} note="你选中的候选答案已成最终标准" />
       </section>
 
+      {stats ? (
+        <section className="flex flex-wrap gap-3 rounded-3xl border border-border bg-stone-50 px-5 py-3 text-sm text-muted-foreground">
+          <span>今日新增 QA <strong className="text-foreground">{stats.today_qa_count}</strong> 条</span>
+          <span className="text-stone-300">|</span>
+          <span>本周新增 QA <strong className="text-foreground">{stats.week_qa_count}</strong> 条</span>
+          <span className="text-stone-300">|</span>
+          <span>今日评审 <strong className="text-foreground">{stats.today_review_count}</strong> 条</span>
+          <span className="text-stone-300">|</span>
+          <span>本周评审 <strong className="text-foreground">{stats.week_review_count}</strong> 条</span>
+          <span className="text-stone-300">|</span>
+          <span>可用试用模型 <strong className="text-foreground">{stats.available_model_count}</strong> 个</span>
+        </section>
+      ) : null}
+
       <section className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
         <Card className="border-none bg-[linear-gradient(135deg,rgba(255,250,245,0.96),rgba(255,255,255,0.96)_55%,rgba(241,245,249,0.92))] ring-1 ring-stone-200">
           <CardHeader>
@@ -222,13 +244,27 @@ export default function ExpertDashboardPage() {
 
         <Card className="bg-stone-50">
           <CardHeader>
-            <CardTitle>工作提示</CardTitle>
+            <CardTitle>最新消息</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4 text-sm leading-7 text-muted-foreground">
-            <p>优先处理 `in_progress` 任务，避免同一题长时间停在草稿状态。</p>
-            <p>争议复核题优先级高于普通初评，建议先完成这类任务。</p>
-            <p>若结论为待改写，尽量确认一条候选答案，便于后续聚合收敛。</p>
-            <p>被最终采纳的记录可以回看你的判断习惯，逐步稳定标准。</p>
+          <CardContent className="space-y-4">
+            {newsList.length ? (
+              newsList.map((item) => (
+                <div
+                  key={item.id}
+                  className="rounded-[24px] border border-border bg-white/80 p-4"
+                >
+                  <p className="font-medium">{item.title}</p>
+                  <p className="mt-2 text-sm leading-7 text-muted-foreground">
+                    {item.content}
+                  </p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {formatTime(item.created_at)}
+                  </p>
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-muted-foreground">暂无最新消息。</p>
+            )}
           </CardContent>
         </Card>
       </section>

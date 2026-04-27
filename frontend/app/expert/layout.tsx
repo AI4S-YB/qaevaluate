@@ -8,7 +8,8 @@ const navItems: NavItem[] = [
   { href: "/expert/imports", label: "我的上传", hint: "上传 QA 批次，推进自评和互评" },
   { href: "/expert/history", label: "我的历史", hint: "查看已提交的评测记录" },
   { href: "/expert/model-trial", label: "模型试用", hint: "选模型、带题对话，检查训练或微调后的效果" },
-  { href: "/expert/profile", label: "我的资料", hint: "维护领域场景和个人简介" }
+  { href: "/expert/profile", label: "我的资料", hint: "维护领域场景和个人简介" },
+  { href: "/expert/feedback", label: "意见反馈", hint: "提交使用反馈与改进建议" }
 ];
 
 export default function ExpertLayout({

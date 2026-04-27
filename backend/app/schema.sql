@@ -347,6 +347,17 @@ CREATE TABLE IF NOT EXISTS export_jobs (
   FOREIGN KEY (created_by) REFERENCES users(id)
 );
 
+CREATE TABLE IF NOT EXISTS news (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  is_published INTEGER NOT NULL DEFAULT 0,
+  created_by INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_token ON auth_sessions(token);
 CREATE INDEX IF NOT EXISTS idx_technical_types_active ON technical_types(is_active, sort_order);
@@ -374,3 +385,26 @@ CREATE INDEX IF NOT EXISTS idx_model_trial_messages_session ON model_trial_messa
 CREATE INDEX IF NOT EXISTS idx_drafts_task ON evaluation_drafts(task_id);
 CREATE INDEX IF NOT EXISTS idx_export_jobs_status ON export_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_batch_failures_batch ON dataset_batch_failures(dataset_batch_id, row_no);
+CREATE INDEX IF NOT EXISTS idx_news_is_published ON news(is_published);
+CREATE INDEX IF NOT EXISTS idx_news_created_at ON news(created_at);
+
+CREATE TABLE IF NOT EXISTS feedbacks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'general',
+  user_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_feedbacks_user_id ON feedbacks(user_id);
+CREATE INDEX IF NOT EXISTS idx_feedbacks_created_at ON feedbacks(created_at);
+
+CREATE TABLE IF NOT EXISTS model_changelogs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  model_name TEXT NOT NULL,
+  change_type TEXT NOT NULL CHECK(change_type IN ('added', 'updated')),
+  description TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_model_changelogs_created_at ON model_changelogs(created_at);

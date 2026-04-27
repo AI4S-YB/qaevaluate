@@ -20,6 +20,11 @@ export default function AdminExpertsPage() {
   const [error, setError] = useState<string | null>(null);
   const [submittingId, setSubmittingId] = useState<number | null>(null);
 
+  const [resettingId, setResettingId] = useState<number | null>(null);
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [resetNotice, setResetNotice] = useState<string | null>(null);
+
   async function loadExperts() {
     setLoading(true);
     setError(null);
@@ -87,6 +92,29 @@ export default function AdminExpertsPage() {
     }
   }
 
+  async function handleResetPassword(expertId: number) {
+    setSubmittingId(expertId);
+    setResetError(null);
+    setResetNotice(null);
+    try {
+      if (resetPassword.length < 6) {
+        setResetError("密码长度不能少于 6 位");
+        return;
+      }
+      await apiFetch(`/api/admin/experts/${expertId}/reset-password`, {
+        method: "POST",
+        body: JSON.stringify({ new_password: resetPassword })
+      });
+      setResetNotice("密码已重置成功。");
+      setResetPassword("");
+      setResettingId(null);
+    } catch (err) {
+      setResetError(err instanceof Error ? err.message : "重置密码失败");
+    } finally {
+      setSubmittingId(null);
+    }
+  }
+
   useEffect(() => {
     void loadExperts();
   }, []);
@@ -110,6 +138,16 @@ export default function AdminExpertsPage() {
           {error ? (
             <div className="rounded-[28px] border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
               {error}
+            </div>
+          ) : null}
+          {resetError ? (
+            <div className="rounded-[28px] border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+              {resetError}
+            </div>
+          ) : null}
+          {resetNotice ? (
+            <div className="rounded-[28px] border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+              {resetNotice}
             </div>
           ) : null}
 
@@ -181,8 +219,49 @@ export default function AdminExpertsPage() {
                     >
                       停用
                     </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={submittingId === expert.id}
+                      onClick={() => {
+                        setResettingId(expert.id);
+                        setResetPassword("");
+                        setResetError(null);
+                        setResetNotice(null);
+                      }}
+                    >
+                      重置密码
+                    </Button>
                   </div>
                 </div>
+
+                {resettingId === expert.id ? (
+                  <div className="flex items-center gap-3 rounded-2xl border border-border bg-white/80 px-4 py-3">
+                    <input
+                      className="field flex-1"
+                      type="password"
+                      value={resetPassword}
+                      onChange={(event) => setResetPassword(event.target.value)}
+                      placeholder="输入新密码（至少 6 位）"
+                      disabled={submittingId === expert.id}
+                    />
+                    <Button
+                      size="sm"
+                      disabled={submittingId === expert.id}
+                      onClick={() => void handleResetPassword(expert.id)}
+                    >
+                      确认重置
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={submittingId === expert.id}
+                      onClick={() => setResettingId(null)}
+                    >
+                      取消
+                    </Button>
+                  </div>
+                ) : null}
 
                 <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_260px_180px] xl:items-stretch">
                   <div className="flex h-full flex-col rounded-2xl border border-border bg-white/80 p-4">

@@ -3,7 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import APP_ENV, DB_PATH, EXPORT_DIR, QUEUE_DIR, UPLOAD_DIR
 from .db import init_db
-from .routes.admin import router as admin_router
+from .routes.admin import news_router, router as admin_router
+from .routes.generate import router as generate_router
 from .routes.applications import router as applications_router
 from .routes.auth import router as auth_router
 from .routes.expert import router as expert_router
@@ -49,3 +50,5 @@ app.include_router(expert_router)
 app.include_router(llm_router)
 app.include_router(model_trial_router)
 app.include_router(admin_router)
+app.include_router(news_router)
+app.include_router(generate_router)

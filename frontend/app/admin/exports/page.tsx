@@ -153,7 +153,7 @@ export default function AdminExportsPage() {
         apiFetch<ExportJob[]>("/api/admin/exports"),
         apiFetch<ApplicationItem[]>("/api/applications"),
         apiFetch<TaxonomyItem[]>("/api/admin/technical-types"),
-        apiFetch<ExportStats>("/api/admin/exports/stats")
+        apiFetch<ExportStats>("/api/exports/stats")
       ]);
       setExports(exportData);
       setApplications(applicationData);

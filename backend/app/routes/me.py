@@ -3,10 +3,11 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..auth import CurrentUser, get_current_user
 from ..db import db_cursor
+from .auth import hash_password
 
 router = APIRouter(tags=["me"])
 
@@ -15,6 +16,11 @@ class MeUpdatePayload(BaseModel):
     organization: Optional[str] = None
     title: Optional[str] = None
     bio: Optional[str] = None
+
+
+class ChangePasswordPayload(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=6)
 
 
 @router.get("/api/me")
@@ -89,3 +95,25 @@ def update_me(
             (payload.organization, payload.title, payload.bio, user_id),
         )
     return {"code": 0, "message": "ok", "data": {"user_id": user_id}}
+
+
+@router.post("/api/me/change-password")
+def change_password(
+    payload: ChangePasswordPayload,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    user_id = current_user["id"]
+    with db_cursor() as cursor:
+        user = cursor.execute(
+            "SELECT id, password_hash FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="user not found")
+        if user["password_hash"] != hash_password(payload.current_password):
+            raise HTTPException(status_code=400, detail="current password is incorrect")
+        cursor.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (hash_password(payload.new_password), user_id),
+        )
+    return {"code": 0, "message": "ok", "data": None}
