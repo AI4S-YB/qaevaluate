@@ -1,5 +1,6 @@
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
@@ -294,6 +295,20 @@ def apply_legacy_migrations(conn: sqlite3.Connection) -> None:
             """
         )
     ensure_export_jobs_support_sft(conn)
+    ensure_column(conn, "llm_configs", "max_tokens INTEGER NOT NULL DEFAULT 800", "max_tokens")
+    ensure_column(conn, "llm_configs", "top_p REAL NOT NULL DEFAULT 0.95", "top_p")
+    if table_exists(conn, "technical_types"):
+        existing = conn.execute(
+            "SELECT id FROM technical_types WHERE code = 'multi_turn_conversation'"
+        ).fetchone()
+        if not existing:
+            conn.execute(
+                """
+                INSERT INTO technical_types (code, name, description, is_active, sort_order, created_at)
+                VALUES ('multi_turn_conversation', '多轮对话', '多轮连续对话型 QA', 1, 25, ?)
+                """,
+                (datetime.utcnow().replace(microsecond=0).isoformat(),),
+            )
     conn.commit()
 
 

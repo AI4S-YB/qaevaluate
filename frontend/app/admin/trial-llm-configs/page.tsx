@@ -15,6 +15,8 @@ type FormState = {
   model_name: string;
   system_prompt: string;
   temperature: string;
+  max_tokens: string;
+  top_p: string;
   is_enabled: boolean;
 };
 
@@ -26,6 +28,8 @@ const initialForm: FormState = {
   model_name: "",
   system_prompt: "",
   temperature: "0.2",
+  max_tokens: "800",
+  top_p: "0.95",
   is_enabled: true
 };
 
@@ -40,6 +44,7 @@ export default function AdminTrialLlmConfigsPage() {
   const [saving, setSaving] = useState(false);
   const [testingId, setTestingId] = useState<number | null>(null);
   const [togglingId, setTogglingId] = useState<number | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -75,9 +80,28 @@ export default function AdminTrialLlmConfigsPage() {
       model_name: config.model_name,
       system_prompt: config.system_prompt ?? "",
       temperature: String(config.temperature),
+      max_tokens: String(config.max_tokens ?? 800),
+      top_p: String(config.top_p ?? 0.95),
       is_enabled: config.is_enabled
     });
     setNotice(null);
+    setError(null);
+  }
+
+  function beginClone(config: LlmConfigItem) {
+    setForm({
+      id: null,
+      name: config.name,
+      base_url: config.base_url,
+      api_key: "",
+      model_name: config.model_name,
+      system_prompt: config.system_prompt ?? "",
+      temperature: String(config.temperature),
+      max_tokens: String(config.max_tokens ?? 800),
+      top_p: String(config.top_p ?? 0.95),
+      is_enabled: true
+    });
+    setNotice("已复制配置，修改模型名后创建即可。");
     setError(null);
   }
 
@@ -95,6 +119,8 @@ export default function AdminTrialLlmConfigsPage() {
         model_name: form.model_name.trim(),
         system_prompt: form.system_prompt.trim() || null,
         temperature: Number(form.temperature),
+        max_tokens: Number(form.max_tokens),
+        top_p: Number(form.top_p),
         is_enabled: form.is_enabled,
         is_active: false
       };
@@ -120,11 +146,21 @@ export default function AdminTrialLlmConfigsPage() {
         });
         setNotice("试用模型已更新。");
       } else {
-        await apiFetch("/api/admin/trial-llm-configs", {
-          method: "POST",
-          body: JSON.stringify(payload)
-        });
-        setNotice("试用模型已创建。");
+        const modelNames = payload.model_name.split(",").map((s: string) => s.trim()).filter(Boolean);
+        if (modelNames.length === 0) {
+          throw new Error("请填写模型名");
+        }
+        for (const modelName of modelNames) {
+          await apiFetch("/api/admin/trial-llm-configs", {
+            method: "POST",
+            body: JSON.stringify({
+              ...payload,
+              name: modelNames.length > 1 ? `${payload.name} - ${modelName}` : payload.name,
+              model_name: modelName
+            })
+          });
+        }
+        setNotice(modelNames.length > 1 ? `已批量创建 ${modelNames.length} 个模型配置。` : "试用模型已创建。");
       }
 
       await loadConfigs();
@@ -173,6 +209,22 @@ export default function AdminTrialLlmConfigsPage() {
       setError(err instanceof Error ? err.message : "切换启用状态失败");
     } finally {
       setTogglingId(null);
+    }
+  }
+
+  async function handleDelete(configId: number) {
+    if (!confirm("确定要删除该试用模型配置吗？")) return;
+    setDeletingId(configId);
+    setError(null);
+    setNotice(null);
+    try {
+      await apiFetch(`/api/admin/trial-llm-configs/${configId}`, { method: "DELETE" });
+      setNotice("试用模型已删除。");
+      await loadConfigs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除试用模型失败");
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -238,7 +290,8 @@ export default function AdminTrialLlmConfigsPage() {
             <div className="grid gap-4 md:grid-cols-2">
               <input
                 className="field"
-                placeholder="模型名"
+                placeholder="模型名，多个用逗号分隔"
+                title="支持逗号分隔批量创建，如 qwen3-8b-v1, qwen3-8b-v2"
                 value={form.model_name}
                 onChange={(event) =>
                   setForm((current) => ({ ...current, model_name: event.target.value }))
@@ -252,7 +305,24 @@ export default function AdminTrialLlmConfigsPage() {
                   setForm((current) => ({ ...current, temperature: event.target.value }))
                 }
               />
+              <input
+                className="field"
+                placeholder="max_tokens"
+                type="number"
+                value={form.max_tokens}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, max_tokens: event.target.value }))
+                }
+              />
             </div>
+            <input
+              className="field"
+              placeholder="top_p (0-1)"
+              value={form.top_p}
+              onChange={(event) =>
+                setForm((current) => ({ ...current, top_p: event.target.value }))
+              }
+            />
             <textarea
               className="field-textarea"
               placeholder="系统提示词，可为空。"
@@ -315,7 +385,7 @@ export default function AdminTrialLlmConfigsPage() {
                     <p className="font-medium">{config.name}</p>
                     <p className="text-sm text-muted-foreground">{config.base_url}</p>
                     <p className="text-xs text-muted-foreground">
-                      API Key: {config.api_key_masked} / temperature {config.temperature}
+                      API Key: {config.api_key_masked} / T {config.temperature} / max_t {config.max_tokens ?? 800} / top_p {config.top_p ?? 0.95}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       更新时间 {formatTime(config.updated_at)}
@@ -342,6 +412,9 @@ export default function AdminTrialLlmConfigsPage() {
                     <Button size="sm" variant="secondary" onClick={() => beginEdit(config)}>
                       编辑
                     </Button>
+                    <Button size="sm" variant="secondary" onClick={() => beginClone(config)}>
+                      复制
+                    </Button>
                     <Button
                       size="sm"
                       variant="secondary"
@@ -357,6 +430,14 @@ export default function AdminTrialLlmConfigsPage() {
                       onClick={() => void handleToggleEnabled(config)}
                     >
                       {togglingId === config.id ? "处理中…" : config.is_enabled ? "停用" : "启用"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={deletingId === config.id}
+                      onClick={() => void handleDelete(config.id)}
+                    >
+                      {deletingId === config.id ? "删除中…" : "删除"}
                     </Button>
                   </div>
                 </div>

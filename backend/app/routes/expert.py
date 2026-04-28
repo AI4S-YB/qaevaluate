@@ -164,9 +164,14 @@ class ExpertImportCandidateAnswerPayload(BaseModel):
     answer: str
 
 
+class ExpertMessagePayload(BaseModel):
+    role: str
+    content: str
+
+
 class ExpertImportRowPayload(BaseModel):
     id: Optional[str] = None
-    question: str
+    question: Optional[str] = None
     answer: Optional[str] = None
     context: Optional[str] = None
     difficulty: Optional[str] = None
@@ -174,6 +179,7 @@ class ExpertImportRowPayload(BaseModel):
     model: Optional[str] = None
     metadata: Optional[dict] = None
     candidate_answers: list[ExpertImportCandidateAnswerPayload] = Field(default_factory=list)
+    messages: list[ExpertMessagePayload] = Field(default_factory=list)
 
 
 class ExpertImportPushPayload(BaseModel):

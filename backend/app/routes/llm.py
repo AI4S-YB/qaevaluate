@@ -88,7 +88,7 @@ def get_llm_config(config_id: Optional[int] = None) -> dict:
                 """
                 SELECT
                   id, name, llm_use_case, provider_code, provider_type, base_url, api_key,
-                  model_name, system_prompt, temperature, is_enabled, is_active, is_trial_enabled
+                  model_name, system_prompt, temperature, max_tokens, top_p, is_enabled, is_active, is_trial_enabled
                 FROM llm_configs
                 WHERE is_active = 1 AND llm_use_case = 'evaluation'
                 ORDER BY id DESC
@@ -100,7 +100,7 @@ def get_llm_config(config_id: Optional[int] = None) -> dict:
                 """
                 SELECT
                   id, name, llm_use_case, provider_code, provider_type, base_url, api_key,
-                  model_name, system_prompt, temperature, is_enabled, is_active, is_trial_enabled
+                  model_name, system_prompt, temperature, max_tokens, top_p, is_enabled, is_active, is_trial_enabled
                 FROM llm_configs
                 WHERE id = ?
                 LIMIT 1
@@ -445,6 +445,8 @@ def stream_message(
                 model_name=llm_config["model_name"],
                 messages=request_messages,
                 temperature=float(llm_config["temperature"]),
+                max_tokens=llm_config["max_tokens"] or 800,
+                top_p=llm_config["top_p"] or 0.95,
             ):
                 assistant_text += chunk
                 yield sse_event("delta", {"content": chunk})
@@ -656,6 +658,8 @@ def auto_review(
             model_name=llm_config["model_name"],
             messages=messages,
             temperature=float(llm_config["temperature"]),
+            max_tokens=llm_config["max_tokens"] or 800,
+            top_p=llm_config["top_p"] or 0.95,
         )
         review = parse_auto_review_response(assistant_text)
         if task_detail["technical_type_code"] == "cot_qa":

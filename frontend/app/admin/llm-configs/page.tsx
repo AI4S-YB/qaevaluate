@@ -78,6 +78,13 @@ const providerPresets: ProviderPreset[] = [
     baseUrl: "",
     defaultModel: "",
     description: "适合自建网关和统一代理。"
+  },
+  {
+    code: "ai4s_lora",
+    label: "AI4S LoRA 模型",
+    baseUrl: "http://182.92.166.143:38080/v1",
+    defaultModel: "qwen3-8b-v1-lora",
+    description: "AI4S 自建 LoRA 微调模型服务，适合农业领域 QA 评测。"
   }
 ];
 
@@ -91,6 +98,8 @@ type FormState = {
   model_name: string;
   system_prompt: string;
   temperature: string;
+  max_tokens: string;
+  top_p: string;
   is_enabled: boolean;
   is_active: boolean;
 };
@@ -105,6 +114,8 @@ const initialForm: FormState = {
   model_name: "qwen-plus",
   system_prompt: "",
   temperature: "0.2",
+  max_tokens: "800",
+  top_p: "0.95",
   is_enabled: true,
   is_active: false
 };
@@ -166,6 +177,8 @@ export default function AdminLlmConfigsPage() {
       model_name: config.model_name,
       system_prompt: config.system_prompt ?? "",
       temperature: String(config.temperature),
+      max_tokens: String(config.max_tokens ?? 800),
+      top_p: String(config.top_p ?? 0.95),
       is_enabled: config.is_enabled,
       is_active: config.is_active
     });
@@ -197,6 +210,8 @@ export default function AdminLlmConfigsPage() {
         model_name: form.model_name.trim(),
         system_prompt: form.system_prompt.trim() || null,
         temperature: Number(form.temperature),
+        max_tokens: Number(form.max_tokens),
+        top_p: Number(form.top_p),
         is_enabled: form.is_enabled || form.is_active,
         is_active: form.is_active
       };
@@ -209,6 +224,12 @@ export default function AdminLlmConfigsPage() {
       }
       if (!Number.isFinite(payload.temperature)) {
         throw new Error("temperature 必须是数字");
+      }
+      if (!Number.isFinite(payload.max_tokens) || payload.max_tokens < 1) {
+        throw new Error("max_tokens 必须是正整数");
+      }
+      if (!Number.isFinite(payload.top_p) || payload.top_p < 0 || payload.top_p > 1) {
+        throw new Error("top_p 必须在 0-1 之间");
       }
 
       if (form.id) {
@@ -369,7 +390,7 @@ export default function AdminLlmConfigsPage() {
                 setForm((current) => ({ ...current, api_key: event.target.value }))
               }
             />
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-4 md:grid-cols-3">
               <input
                 className="field"
                 placeholder="模型名"
@@ -386,7 +407,24 @@ export default function AdminLlmConfigsPage() {
                   setForm((current) => ({ ...current, temperature: event.target.value }))
                 }
               />
+              <input
+                className="field"
+                placeholder="max_tokens"
+                type="number"
+                value={form.max_tokens}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, max_tokens: event.target.value }))
+                }
+              />
             </div>
+            <input
+              className="field"
+              placeholder="top_p (0-1)"
+              value={form.top_p}
+              onChange={(event) =>
+                setForm((current) => ({ ...current, top_p: event.target.value }))
+              }
+            />
             <textarea
               className="field-textarea"
               placeholder="系统提示词，可为空。"
@@ -473,7 +511,7 @@ export default function AdminLlmConfigsPage() {
                     <p className="font-medium">{config.name}</p>
                     <p className="text-sm text-muted-foreground">{config.base_url}</p>
                     <p className="text-xs text-muted-foreground">
-                      API Key: {config.api_key_masked} / temperature {config.temperature}
+                      API Key: {config.api_key_masked} / T {config.temperature} / max_t {config.max_tokens ?? 800} / top_p {config.top_p ?? 0.95}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       更新时间 {formatTime(config.updated_at)}

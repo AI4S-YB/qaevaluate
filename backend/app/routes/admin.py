@@ -101,6 +101,8 @@ class LlmConfigPayload(BaseModel):
     model_name: str
     system_prompt: Optional[str] = None
     temperature: float = 0.2
+    max_tokens: int = 800
+    top_p: float = 0.95
     is_enabled: bool = True
     is_active: bool = False
     is_trial_enabled: bool = False
@@ -122,15 +124,21 @@ class ImportCandidateAnswerPayload(BaseModel):
     answer: str
 
 
+class MessagePayload(BaseModel):
+    role: str
+    content: str
+
+
 class ImportRowPayload(BaseModel):
     id: Optional[str] = None
-    question: str
+    question: Optional[str] = None
     answer: Optional[str] = None
     context: Optional[str] = None
     difficulty: Optional[str] = None
     source: Optional[str] = None
     model: Optional[str] = None
     candidate_answers: list[ImportCandidateAnswerPayload] = Field(default_factory=list)
+    messages: list[MessagePayload] = Field(default_factory=list)
 
 
 class ImportPushPayload(BaseModel):
@@ -218,6 +226,8 @@ def serialize_llm_config(row) -> dict:
     api_key = get_llm_api_key(item["id"], fallback_api_key)
     item["is_enabled"] = bool(item["is_enabled"])
     item["is_active"] = bool(item["is_active"])
+    item["max_tokens"] = item.get("max_tokens", 800)
+    item["top_p"] = item.get("top_p", 0.95)
     item["llm_use_case"] = item.get("llm_use_case") or (
         LLM_USE_CASE_TRIAL if bool(item.get("is_trial_enabled")) else LLM_USE_CASE_EVALUATION
     )
@@ -254,6 +264,8 @@ def normalize_llm_payload(payload: LlmConfigPayload, use_case: str) -> dict:
         "model_name": payload.model_name.strip(),
         "system_prompt": payload.system_prompt,
         "temperature": payload.temperature,
+        "max_tokens": payload.max_tokens,
+        "top_p": payload.top_p,
         "is_enabled": is_enabled,
         "is_active": is_active,
         "llm_use_case": use_case,
@@ -793,10 +805,10 @@ def create_llm_config(
             """
             INSERT INTO llm_configs (
               name, llm_use_case, provider_code, provider_type, base_url, api_key, model_name,
-              system_prompt, temperature, is_enabled, is_active, is_trial_enabled,
+              system_prompt, temperature, max_tokens, top_p, is_enabled, is_active, is_trial_enabled,
               last_tested_at, last_test_status, last_test_message, last_test_latency_ms,
               created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
             """,
             (
                 normalized["name"],
@@ -808,6 +820,8 @@ def create_llm_config(
                 normalized["model_name"],
                 normalized["system_prompt"],
                 normalized["temperature"],
+                normalized["max_tokens"],
+                normalized["top_p"],
                 1 if normalized["is_enabled"] else 0,
                 1 if normalized["is_active"] else 0,
                 0,
@@ -856,6 +870,8 @@ def update_llm_config(
                 model_name = ?,
                 system_prompt = ?,
                 temperature = ?,
+                max_tokens = ?,
+                top_p = ?,
                 is_enabled = ?,
                 is_active = ?,
                 is_trial_enabled = ?,
@@ -872,6 +888,8 @@ def update_llm_config(
                 normalized["model_name"],
                 normalized["system_prompt"],
                 normalized["temperature"],
+                normalized["max_tokens"],
+                normalized["top_p"],
                 1 if normalized["is_enabled"] else 0,
                 1 if normalized["is_active"] else 0,
                 0,
@@ -907,10 +925,10 @@ def create_trial_llm_config(
             """
             INSERT INTO llm_configs (
               name, llm_use_case, provider_code, provider_type, base_url, api_key, model_name,
-              system_prompt, temperature, is_enabled, is_active, is_trial_enabled,
+              system_prompt, temperature, max_tokens, top_p, is_enabled, is_active, is_trial_enabled,
               last_tested_at, last_test_status, last_test_message, last_test_latency_ms,
               created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, NULL, NULL, NULL, NULL, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, NULL, NULL, NULL, NULL, ?, ?)
             """,
             (
                 normalized["name"],
@@ -922,6 +940,8 @@ def create_trial_llm_config(
                 normalized["model_name"],
                 normalized["system_prompt"],
                 normalized["temperature"],
+                normalized["max_tokens"],
+                normalized["top_p"],
                 1 if normalized["is_enabled"] else 0,
                 created_at,
                 created_at,
@@ -967,6 +987,8 @@ def update_trial_llm_config(
                 model_name = ?,
                 system_prompt = ?,
                 temperature = ?,
+                max_tokens = ?,
+                top_p = ?,
                 is_enabled = ?,
                 is_active = 0,
                 is_trial_enabled = 1,
@@ -983,6 +1005,8 @@ def update_trial_llm_config(
                 normalized["model_name"],
                 normalized["system_prompt"],
                 normalized["temperature"],
+                normalized["max_tokens"],
+                normalized["top_p"],
                 1 if normalized["is_enabled"] else 0,
                 updated_at,
                 config_id,
@@ -1082,6 +1106,34 @@ def enable_trial_llm_config(
     return {"code": 0, "message": "ok", "data": {"id": config_id, "is_enabled": payload.is_enabled}}
 
 
+@router.delete("/trial-llm-configs/{config_id}")
+def delete_trial_llm_config(
+    config_id: int,
+    current_user: CurrentUser = Depends(require_admin),
+):
+    with db_cursor() as cursor:
+        existing = cursor.execute(
+            "SELECT id, llm_use_case FROM llm_configs WHERE id = ?",
+            (config_id,),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="llm config not found")
+        if (existing["llm_use_case"] or LLM_USE_CASE_EVALUATION) != LLM_USE_CASE_TRIAL:
+            raise HTTPException(status_code=400, detail="config belongs to qa evaluation scope")
+        cursor.execute(
+            "DELETE FROM model_trial_messages WHERE session_id IN (SELECT id FROM model_trial_sessions WHERE llm_config_id = ?)",
+            (config_id,),
+        )
+        cursor.execute("DELETE FROM model_trial_sessions WHERE llm_config_id = ?", (config_id,))
+        cursor.execute(
+            "DELETE FROM llm_messages WHERE session_id IN (SELECT id FROM llm_sessions WHERE llm_config_id = ?)",
+            (config_id,),
+        )
+        cursor.execute("DELETE FROM llm_sessions WHERE llm_config_id = ?", (config_id,))
+        cursor.execute("DELETE FROM llm_configs WHERE id = ?", (config_id,))
+    return {"code": 0, "message": "ok", "data": {"id": config_id}}
+
+
 @router.post("/llm-configs/{config_id}/test")
 def test_llm_config(
     config_id: int,
@@ -1112,7 +1164,9 @@ def _test_llm_config(config_id: int, expected_use_case: str):
               api_key,
               model_name,
               system_prompt,
-              temperature
+              temperature,
+              max_tokens,
+              top_p
             FROM llm_configs
             WHERE id = ?
             """,
@@ -1160,6 +1214,8 @@ def _test_llm_config(config_id: int, expected_use_case: str):
                 {"role": "user", "content": "请返回 TEST_OK"},
             ],
             temperature=float(row["temperature"]),
+            max_tokens=row["max_tokens"] or 800,
+            top_p=row["top_p"] or 0.95,
         )
         latency_ms = int((time.perf_counter() - started) * 1000)
         message = f"连接成功，模型返回：{content}"

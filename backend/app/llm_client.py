@@ -571,6 +571,8 @@ def call_openai_compatible_chat(
     model_name: str,
     messages: list[dict[str, str]],
     temperature: float,
+    max_tokens: int = 800,
+    top_p: float = 0.95,
 ) -> str:
     url = f"{base_url.rstrip('/')}/chat/completions"
     payload = json.dumps(
@@ -578,6 +580,8 @@ def call_openai_compatible_chat(
             "model": model_name,
             "messages": messages,
             "temperature": temperature,
+            "max_tokens": max_tokens,
+            "top_p": top_p,
         }
     ).encode("utf-8")
     http_request = request.Request(
@@ -621,6 +625,8 @@ def iter_openai_compatible_chat(
     model_name: str,
     messages: list[dict[str, str]],
     temperature: float,
+    max_tokens: int = 800,
+    top_p: float = 0.95,
 ) -> Iterator[str]:
     url = f"{base_url.rstrip('/')}/chat/completions"
     payload = json.dumps(
@@ -628,6 +634,8 @@ def iter_openai_compatible_chat(
             "model": model_name,
             "messages": messages,
             "temperature": temperature,
+            "max_tokens": max_tokens,
+            "top_p": top_p,
             "stream": True,
         }
     ).encode("utf-8")

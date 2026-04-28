@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS llm_configs (
   model_name TEXT NOT NULL,
   system_prompt TEXT,
   temperature REAL NOT NULL DEFAULT 0.2,
+  max_tokens INTEGER NOT NULL DEFAULT 800,
+  top_p REAL NOT NULL DEFAULT 0.95,
   is_enabled INTEGER NOT NULL DEFAULT 1,
   is_active INTEGER NOT NULL DEFAULT 0,
   is_trial_enabled INTEGER NOT NULL DEFAULT 0,

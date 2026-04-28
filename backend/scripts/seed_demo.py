@@ -30,6 +30,7 @@ TECHNICAL_TYPES = [
     ("direct_qa", "普通问答", "直接回答型 QA", 10),
     ("short_reasoning_qa", "短推理问答", "带简短推理解释的 QA", 15),
     ("cot_qa", "长思维链问答", "带推理过程的 QA", 20),
+    ("multi_turn_conversation", "多轮对话", "多轮连续对话型 QA，每行为一个完整对话", 25),
 ]
 
 BUSINESS_TAGS = [

@@ -389,7 +389,7 @@ export type ExpertImportPushPayload = {
   business_tag_codes: string[];
   rows: Array<{
     id?: string;
-    question: string;
+    question?: string;
     answer?: string;
     context?: string;
     difficulty?: string;
@@ -398,6 +398,10 @@ export type ExpertImportPushPayload = {
     metadata?: Record<string, unknown>;
     candidate_answers?: Array<{
       answer: string;
+    }>;
+    messages?: Array<{
+      role: string;
+      content: string;
     }>;
   }>;
   auto_parse?: boolean;
@@ -693,6 +697,8 @@ export type LlmConfigItem = {
   model_name: string;
   system_prompt: string | null;
   temperature: number;
+  max_tokens: number | null;
+  top_p: number | null;
   is_enabled: boolean;
   is_active: boolean;
   is_trial_enabled: boolean;

@@ -582,15 +582,28 @@ def stream_trial_message(
         assistant_text = ""
         try:
             yield sse_event("started", {"session_id": session_id})
-            for chunk in iter_openai_compatible_chat(
-                base_url=config["base_url"],
-                api_key=config["resolved_api_key"],
-                model_name=config["model_name"],
-                messages=request_messages,
-                temperature=float(config["temperature"] or 0.2),
-            ):
-                assistant_text += chunk
-                yield sse_event("delta", {"content": chunk})
+            try:
+                for chunk in iter_openai_compatible_chat(
+                    base_url=config["base_url"],
+                    api_key=config["resolved_api_key"],
+                    model_name=config["model_name"],
+                    messages=request_messages,
+                    temperature=float(config["temperature"] or 0.2),
+                ):
+                    assistant_text += chunk
+                    yield sse_event("delta", {"content": chunk})
+            except LlmClientError as stream_exc:
+                if "stream" in str(stream_exc).lower():
+                    assistant_text = call_openai_compatible_chat(
+                        base_url=config["base_url"],
+                        api_key=config["resolved_api_key"],
+                        model_name=config["model_name"],
+                        messages=request_messages,
+                        temperature=float(config["temperature"] or 0.2),
+                    )
+                    yield sse_event("delta", {"content": assistant_text})
+                else:
+                    raise
 
             completed_at = now_iso()
             with db_cursor() as cursor:

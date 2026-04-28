@@ -270,10 +270,26 @@ def import_batch(batch_id: int) -> None:
                 try:
                     if not isinstance(item, dict):
                         raise ValueError("row must be a JSON object")
-                    question = item["question"]
-                    answer = item.get("answer")
-                    if not answer and item.get("candidate_answers"):
-                        answer = item["candidate_answers"][0]["answer"]
+
+                    messages = item.get("messages")
+                    if isinstance(messages, list) and len(messages) > 0:
+                        user_messages = [m["content"] for m in messages if m.get("role") == "user"]
+                        assistant_messages = [m["content"] for m in messages if m.get("role") == "assistant"]
+                        question = user_messages[0] if user_messages else ""
+                        answer = assistant_messages[-1] if assistant_messages else ""
+                        meta = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+                        meta["messages"] = messages
+                        meta["turns"] = len(messages)
+                        context = item.get("context") or meta.get("context")
+                    else:
+                        question = item["question"]
+                        answer = item.get("answer")
+                        if not answer and item.get("candidate_answers"):
+                            answer = item["candidate_answers"][0]["answer"]
+                        meta = item.get("metadata") if isinstance(item.get("metadata"), dict) else None
+                        context = item.get("context")
+                    if not question:
+                        raise ValueError("missing question")
                     if not answer:
                         raise ValueError("missing answer")
 
@@ -292,10 +308,8 @@ def import_batch(batch_id: int) -> None:
                             batch["application_id"],
                             batch_id,
                             question,
-                            item.get("context"),
-                            json.dumps(item.get("metadata"), ensure_ascii=False)
-                            if isinstance(item.get("metadata"), dict)
-                            else None,
+                            context,
+                            json.dumps(meta, ensure_ascii=False) if meta else None,
                             json.dumps(sorted(batch_business_tags), ensure_ascii=False),
                             item.get("difficulty"),
                             item.get("source"),
@@ -336,7 +350,13 @@ def import_batch(batch_id: int) -> None:
                                 str(item.get("question", ""))[:120]
                                 if isinstance(item, dict)
                                 else str(item)[:120]
-                            ),
+                            )
+                            or (
+                                str(item.get("messages", [{}])[0].get("content", ""))[:120]
+                                if isinstance(item, dict) and isinstance(item.get("messages"), list) and item["messages"]
+                                else None
+                            )
+                            or str(item)[:120],
                             str(exc),
                             json.dumps(item, ensure_ascii=False)
                             if isinstance(item, (dict, list))
