@@ -25,6 +25,7 @@ frontend/.next/
 frontend/.next-dev/
 frontend/.next-prod/
 frontend/node_modules/
+*.tsbuildinfo
 data/uploads/*
 data/exports/*
 data/queue/pending/*
