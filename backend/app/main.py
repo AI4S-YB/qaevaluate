@@ -14,12 +14,19 @@ from .routes.model_trial import router as model_trial_router
 
 app = FastAPI(title="QA Evaluate API", version="0.1.0")
 
+<<<<<<< HEAD
 # allow_credentials=True 不能与 allow_origins=["*"] 同时使用；浏览器会拒绝响应。
 # 本应用用 Bearer Token（Authorization 头），不依赖跨域 Cookie，故关闭 credentials。
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
+=======
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+>>>>>>> 26fc7231bbdd932be6ae9e34e895ee67ca3d7fda
     allow_methods=["*"],
     allow_headers=["*"],
 )
