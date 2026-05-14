@@ -26,16 +26,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-<<<<<<< HEAD
     <html lang="zh-CN" suppressHydrationWarning>
       <body
         className={`${sans.variable} ${serif.variable} font-sans`}
         suppressHydrationWarning
       >
-=======
-    <html lang="zh-CN">
-      <body className={`${sans.variable} ${serif.variable} font-sans`}>
->>>>>>> 26fc7231bbdd932be6ae9e34e895ee67ca3d7fda
         {children}
       </body>
     </html>
