@@ -1,0 +1,125 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 42 45% 97%;
+    --foreground: 150 18% 17%;
+    --card: 0 0% 100%;
+    --card-foreground: 150 18% 17%;
+    --border: 35 23% 86%;
+    --input: 35 23% 86%;
+    --primary: 160 33% 34%;
+    --primary-foreground: 0 0% 100%;
+    --muted: 42 26% 94%;
+    --muted-foreground: 152 10% 41%;
+    --accent: 38 82% 91%;
+    --accent-foreground: 26 46% 30%;
+    --ring: 160 33% 34%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}
+
+@layer components {
+  .field {
+    @apply h-11 w-full rounded-md border border-border bg-white px-4 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15;
+  }
+
+  .field-textarea {
+    @apply min-h-28 w-full rounded-md border border-border bg-white px-4 py-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15;
+  }
+
+  .section-grid {
+    @apply grid gap-4 md:grid-cols-2 xl:grid-cols-4;
+  }
+
+  .markdown-content {
+    @apply space-y-3 text-sm leading-7;
+  }
+
+  .markdown-content h1 {
+    @apply text-xl font-semibold;
+  }
+
+  .markdown-content h2 {
+    @apply text-lg font-semibold;
+  }
+
+  .markdown-content h3 {
+    @apply text-base font-semibold;
+  }
+
+  .markdown-content p {
+    @apply whitespace-pre-wrap;
+  }
+
+  .markdown-content ul {
+    @apply list-disc space-y-1 pl-5;
+  }
+
+  .markdown-content ol {
+    @apply list-decimal space-y-1 pl-5;
+  }
+
+  .markdown-content blockquote {
+    @apply border-l-2 border-stone-300 pl-4 text-muted-foreground;
+  }
+
+  .markdown-content pre {
+    @apply overflow-x-auto rounded-md border border-border bg-stone-950 px-4 py-3 font-mono text-[13px] leading-6 text-stone-100;
+  }
+
+  .markdown-content pre code {
+    @apply bg-transparent p-0 text-inherit;
+  }
+}
+
+@layer utilities {
+  [class*="rounded-[36px]"] {
+    border-radius: 16px !important;
+  }
+
+  [class*="rounded-[32px]"] {
+    border-radius: 14px !important;
+  }
+
+  [class*="rounded-[30px]"] {
+    border-radius: 14px !important;
+  }
+
+  [class*="rounded-[28px]"] {
+    border-radius: 12px !important;
+  }
+
+  [class*="rounded-[24px]"] {
+    border-radius: 10px !important;
+  }
+
+  [class*="rounded-[20px]"] {
+    border-radius: 8px !important;
+  }
+
+  [class*="rounded-[18px]"] {
+    border-radius: 8px !important;
+  }
+
+  [class~="rounded-3xl"] {
+    border-radius: 12px !important;
+  }
+
+  [class~="rounded-2xl"] {
+    border-radius: 10px !important;
+  }
+
+  [class~="rounded-xl"] {
+    border-radius: 8px !important;
+  }
+}

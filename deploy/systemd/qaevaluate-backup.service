@@ -1,0 +1,15 @@
+[Unit]
+Description=QA Evaluate SQLite Backup
+After=network.target
+
+[Service]
+Type=oneshot
+User=qaevaluate
+Group=qaevaluate
+WorkingDirectory=/srv/qaevaluate/current
+Environment=QAEVALUATE_ENV=production
+Environment=QAEVALUATE_BACKUP_KEEP_COUNT=14
+EnvironmentFile=-/srv/qaevaluate/current/.env
+EnvironmentFile=-/srv/qaevaluate/current/.env.production
+EnvironmentFile=-/srv/qaevaluate/current/.env.production.local
+ExecStart=/bin/bash -lc './scripts/backup-db.sh production && ./scripts/cleanup-backups.sh production "${QAEVALUATE_BACKUP_KEEP_COUNT:-14}"'
